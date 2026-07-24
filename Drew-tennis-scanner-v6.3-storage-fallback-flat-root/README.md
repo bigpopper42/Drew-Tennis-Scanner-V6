@@ -1,8 +1,8 @@
-# Drew Tennis Scanner Version 6.2
+# Drew Tennis Scanner Version 6.3
 
-Version 6.2 is the diagnostic-safe implementation of Drew's late-match stability strategy. It evaluates ATP Tour and Challenger singles continuously, creates 3%, 5%, or 7% paper recommendations from live tennis evidence, and treats Polymarket pricing as informational only.
+Version 6.3 is the diagnostic-safe implementation of Drew's late-match stability strategy. It evaluates ATP Tour and Challenger singles continuously, creates 3%, 5%, or 7% paper recommendations from live tennis evidence, and treats Polymarket pricing as informational only.
 
-## Locked V6.2 behavior
+## Locked V6.3 behavior
 
 - Polymarket price does not participate in qualification, Stability Score, or position sizing.
 - `SAVE_ALL_SCANS=true` stores both `TRADE` and `NO TRADE` evaluations with exact blockers. With `false`, only qualified `TRADE` rows are stored.
@@ -41,4 +41,4 @@ python -m pytest -q
 python -m compileall -q .
 ```
 
-No real orders are placed. Version 6.2 remains a paper/shadow scanner.
+No real orders are placed. Version 6.3 remains a paper/shadow scanner.

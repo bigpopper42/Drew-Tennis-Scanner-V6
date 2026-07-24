@@ -74,7 +74,7 @@ class SupabaseStore:
                 "Authorization": f"Bearer {self.key}",
                 "Accept-Profile": self.schema,
                 "Content-Profile": self.schema,
-                "User-Agent": "DrewTennisScanner/6.2-Railway",
+                "User-Agent": "DrewTennisScanner/6.3-Railway",
             }
         )
         return session
@@ -143,28 +143,116 @@ class SupabaseStore:
         *,
         chunk_size: int = 100,
     ) -> InsertResult:
+        """Insert diagnostic rows, with a guaranteed compact fallback.
+
+        API Tennis fields occasionally contain values that PostgreSQL cannot
+        coerce into a typed column (for example a non-ISO date). A single bad
+        value causes PostgREST to reject the entire batch. Version 6.3 first
+        attempts the full rows, then isolates failures row-by-row, and finally
+        stores a compact diagnostic row containing the raw original payload in
+        ``match_snapshot``. This keeps the scanner observable even when one
+        optional field is malformed.
+        """
         attempted = len(records)
         inserted = 0
-        for start in range(0, attempted, max(1, int(chunk_size))):
-            chunk = list(records[start : start + max(1, int(chunk_size))])
+        failures: List[str] = []
+        size = max(1, int(chunk_size))
+
+        for start in range(0, attempted, size):
+            chunk = list(records[start : start + size])
             response = self._post(
                 "shadow_scans",
                 chunk,
                 query="on_conflict=dedupe_key",
                 prefer="resolution=ignore-duplicates,return=representation",
             )
-            self._raise_for_response(response, "shadow scan insert")
-            try:
-                payload = response.json() if response.content else []
-            except ValueError:
-                payload = []
-            if isinstance(payload, list):
-                inserted += len(payload)
-            elif response.status_code in {200, 201, 204}:
-                # Defensive fallback. PostgREST normally returns a list when
-                # return=representation is requested.
-                inserted += len(chunk)
+            if response.ok:
+                inserted += self._inserted_count(response, len(chunk))
+                continue
+
+            # Do not lose an entire cycle because one optional field is bad.
+            for record in chunk:
+                single = self._post(
+                    "shadow_scans",
+                    [record],
+                    query="on_conflict=dedupe_key",
+                    prefer="resolution=ignore-duplicates,return=representation",
+                )
+                if single.ok:
+                    inserted += self._inserted_count(single, 1)
+                    continue
+
+                compact = self._compact_shadow_record(record, single.text)
+                fallback = self._post(
+                    "shadow_scans",
+                    [compact],
+                    query="on_conflict=dedupe_key",
+                    prefer="resolution=ignore-duplicates,return=representation",
+                )
+                if fallback.ok:
+                    inserted += self._inserted_count(fallback, 1)
+                else:
+                    failures.append(
+                        f"full={self._response_preview(single)}; "
+                        f"fallback={self._response_preview(fallback)}"
+                    )
+
+        if failures:
+            raise SupabaseStoreError(
+                "Supabase shadow scan insert failed after compact fallback: "
+                + " | ".join(failures[:3])
+            )
         return InsertResult(attempted=attempted, inserted=inserted)
+
+    @staticmethod
+    def _response_preview(response: requests.Response) -> str:
+        return f"HTTP {response.status_code}: " + (response.text or "")[:4000].replace("\n", " ")
+
+    @staticmethod
+    def _inserted_count(response: requests.Response, fallback_count: int) -> int:
+        try:
+            payload = response.json() if response.content else []
+        except ValueError:
+            payload = []
+        if isinstance(payload, list):
+            return len(payload)
+        return fallback_count if response.status_code in {200, 201, 204} else 0
+
+    @classmethod
+    def _compact_shadow_record(
+        cls, record: Mapping[str, Any], original_error: str
+    ) -> Dict[str, Any]:
+        """Build a schema-safe row while preserving the complete raw record."""
+        original = cls._json_safe(dict(record))
+        diagnostics = {
+            "storage_fallback": True,
+            "original_insert_error": (original_error or "")[:4000],
+            "original_record": original,
+        }
+        compact = {
+            "scanned_at": record.get("scanned_at"),
+            "cycle_id": record.get("cycle_id"),
+            "worker_id": str(record.get("worker_id") or "unknown"),
+            "worker_version": str(record.get("worker_version") or "6.3"),
+            "event_key": str(record.get("event_key") or "unknown"),
+            "player": str(record.get("player") or "Unknown"),
+            "opponent": str(record.get("opponent") or "Unknown"),
+            "market_found": bool(record.get("market_found")),
+            "market_price_cents": float(record.get("market_price_cents") or 0.0),
+            "decision_status": str(record.get("decision_status") or "NO TRADE"),
+            "decision_reason": str(record.get("decision_reason") or "Diagnostic fallback row"),
+            "stability_score": float(record.get("stability_score") or 0.0),
+            "required_score": float(record.get("required_score") or 0.0),
+            "stake_pct": float(record.get("stake_pct") or 0.0),
+            "stake_amount": float(record.get("stake_amount") or 0.0),
+            "bankroll": float(record.get("bankroll") or 0.0),
+            "match_snapshot": diagnostics,
+            "paper_trade_status": str(record.get("paper_trade_status") or "NOT_ENTERED"),
+            "paper_stake_amount": float(record.get("paper_stake_amount") or 0.0),
+            "paper_pnl": float(record.get("paper_pnl") or 0.0),
+            "dedupe_key": str(record.get("dedupe_key") or ""),
+        }
+        return cls._json_safe(compact)
 
 
     def fetch_open_trades(self, *, limit: int = 1000) -> List[Dict[str, Any]]:
