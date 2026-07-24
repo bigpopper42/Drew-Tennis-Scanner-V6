@@ -1,4 +1,4 @@
-# Railway Handoff — Version 6.0
+# Railway Handoff — Version 6.1
 
 The existing Railway worker remains the always-on scanner.
 

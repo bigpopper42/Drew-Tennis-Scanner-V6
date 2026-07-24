@@ -25,7 +25,7 @@ from scanner.polymarket import (
     search_us_markets,
 )
 
-VERSION = "6.0"
+VERSION = "6.1"
 st.set_page_config(page_title=f"Tennis Scanner V{VERSION}", page_icon="🎾", layout="wide")
 init_db()
 
@@ -387,7 +387,7 @@ for key, value in {
 
 st.title("🎾 Tennis Scanner Assistant")
 st.caption(
-    "Version 6.0: Final decision tree, informational Polymarket pricing, qualified-trade-only recording, outcome tracking, and Railway/Supabase monitoring. No real orders are placed."
+    "Version 6.1: Final decision tree plus SAVE_ALL_SCANS diagnostics, informational Polymarket pricing, outcome tracking, and Railway/Supabase monitoring. No real orders are placed."
 )
 
 page = st.selectbox(
@@ -548,7 +548,7 @@ if page == "Worker dashboard":
                 st.download_button(
                     "Download trade candidates CSV",
                     trade_df.to_csv(index=False).encode("utf-8"),
-                    "tennis_scanner_v6.0_trade_candidates.csv",
+                    "tennis_scanner_v6.1_trade_candidates.csv",
                     "text/csv",
                 )
 
@@ -567,10 +567,15 @@ if page == "Worker dashboard":
                     )
                 state_columns = [
                     "scanned_at", "player", "opponent", "tournament",
-                    "decision_status", "stability_score", "market_found",
+                    "decision_status", "decision_reason", "stability_score",
+                    "match_closing_set", "tiebreak", "break_lead", "serving",
+                    "backed_player_games_in_set", "opponent_games_in_set",
+                    "current_game_score", "current_set_breaks_suffered",
+                    "effective_service_points_won_pct", "market_found",
                     "market_price_cents", "event_final_result", "event_game_result",
-                    "event_serve", "break_lead", "serving",
-                    "data_completeness_pct", "core_completeness_pct",
+                    "event_serve", "data_completeness_pct",
+                    "core_completeness_pct", "scoring_completeness_pct",
+                    "warnings", "errors",
                 ]
                 for column in state_columns:
                     if column not in scan_df.columns:
@@ -920,7 +925,7 @@ if page == "Diagnostics":
         st.download_button(
             "Download raw API Tennis snapshot",
             data=json.dumps(raw_events, indent=2, default=str).encode("utf-8"),
-            file_name="api_tennis_live_snapshot_v6.0.json",
+            file_name="api_tennis_live_snapshot_v6.1.json",
             mime="application/json",
         )
 
@@ -975,7 +980,7 @@ if page == "Paper log":
         st.download_button(
             "Download log as CSV",
             log_df.to_csv(index=False).encode("utf-8"),
-            "tennis_scanner_v6.0_log.csv",
+            "tennis_scanner_v6.1_log.csv",
             "text/csv",
         )
         c1, c2, c3 = st.columns(3)
@@ -1021,5 +1026,5 @@ if page == "Polymarket search":
 
 st.divider()
 st.caption(
-    "Version 6.0 is a shadow/paper-trading system. It reads Railway results from Supabase but does not place trades or access a wallet."
+    "Version 6.1 is a shadow/paper-trading system. It reads Railway results from Supabase but does not place trades or access a wallet."
 )

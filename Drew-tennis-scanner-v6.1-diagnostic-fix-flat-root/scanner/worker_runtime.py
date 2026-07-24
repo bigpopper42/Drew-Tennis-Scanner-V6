@@ -124,7 +124,7 @@ class WorkerConfig:
             max_events_per_cycle=_env_int("MAX_EVENTS_PER_CYCLE", 0, 0, 1000),
             max_pending_records=_env_int("MAX_PENDING_RECORDS", 5000, 100, 100000),
             outcome_check_interval_seconds=_env_int("OUTCOME_CHECK_INTERVAL_SECONDS", 300, 60, 86400),
-            save_all_scans=False,
+            save_all_scans=_env_bool("SAVE_ALL_SCANS", False),
             dry_run=dry_run,
             worker_id=worker_id,
             railway_deployment_id=str(os.getenv("RAILWAY_DEPLOYMENT_ID") or "").strip(),
@@ -157,7 +157,9 @@ class WorkerConfig:
             "shadow_bankroll": self.shadow_bankroll,
             "max_events_per_cycle": self.max_events_per_cycle,
             "outcome_check_interval_seconds": self.outcome_check_interval_seconds,
-            "stores_only_qualified_trades": True,
+            "save_all_scans": self.save_all_scans,
+            "storage_mode": "all_player_evaluations" if self.save_all_scans else "qualified_trades_only",
+            "stores_only_qualified_trades": not self.save_all_scans,
             "dry_run": self.dry_run,
             "worker_id": self.worker_id,
             "railway_deployment_id": self.railway_deployment_id,
@@ -349,7 +351,7 @@ class RailwayShadowWorker:
                     for result in fallback:
                         status = str(result.decision.status or "UNKNOWN")
                         report.decision_counts[status] = report.decision_counts.get(status, 0) + 1
-                        if status == "TRADE":
+                        if status == "TRADE" or self.config.save_all_scans:
                             current_records.append(
                                 self._build_scan_record(
                                     event,
@@ -363,7 +365,8 @@ class RailwayShadowWorker:
                                 )
                             )
 
-            # Every player is evaluated, but Version 6.0 persists only qualified trades.
+            # Every player is evaluated. SAVE_ALL_SCANS=true stores all player
+            # evaluations for diagnosis; otherwise only qualified trades are stored.
             report.player_scans = sum(
                 int(value) for value in report.decision_counts.values()
             )
@@ -468,7 +471,7 @@ class RailwayShadowWorker:
         for result in scans:
             status = str(result.decision.status or "UNKNOWN")
             counts[status] = counts.get(status, 0) + 1
-            if status != "TRADE":
+            if status != "TRADE" and not self.config.save_all_scans:
                 continue
             records.append(
                 self._build_scan_record(
@@ -558,11 +561,15 @@ class RailwayShadowWorker:
         market_price: float,
         extra_errors: Sequence[str],
     ) -> Dict[str, Any]:
-        """Build one database row for a qualified trade only."""
+        """Build one Supabase row for a player evaluation.
+
+        In normal mode only TRADE rows reach this method. With
+        SAVE_ALL_SCANS=true, NO TRADE rows are also persisted so the exact
+        blockers and missing fields can be inspected instead of discarded.
+        """
         match = result.match
         decision = result.decision
-        if decision.status != "TRADE":
-            raise ValueError("Version 6.0 records only qualified trades.")
+        is_trade = decision.status == "TRADE"
 
         market_row = market_row or {}
         mapping_errors = list(result.mapping.errors or [])
@@ -600,16 +607,32 @@ class RailwayShadowWorker:
 
         stable_event_key = str(match.event_key or event_key(event))
         trade_key = f"{stable_event_key}|{match.player.strip().casefold()}"
-        prior_pct = self.recommendation_state.get(trade_key)
-        if prior_pct is None:
-            recommendation_change = "INITIAL"
-        elif decision.stake_pct > prior_pct:
-            recommendation_change = "UPGRADE"
-        elif decision.stake_pct < prior_pct:
-            recommendation_change = "DOWNGRADE"
+        if is_trade:
+            prior_pct = self.recommendation_state.get(trade_key)
+            if prior_pct is None:
+                recommendation_change = "INITIAL"
+            elif decision.stake_pct > prior_pct:
+                recommendation_change = "UPGRADE"
+            elif decision.stake_pct < prior_pct:
+                recommendation_change = "DOWNGRADE"
+            else:
+                recommendation_change = "UNCHANGED"
+            self.recommendation_state[trade_key] = decision.stake_pct
         else:
-            recommendation_change = "UNCHANGED"
-        self.recommendation_state[trade_key] = decision.stake_pct
+            recommendation_change = "NOT_APPLICABLE"
+
+        match_snapshot = match.to_dict()
+        match_snapshot["decision_diagnostics"] = {
+            "status": decision.status,
+            "reason": decision.reason,
+            "passed_rules": list(decision.passed),
+            "blocking_rules": list(decision.concerns),
+            "score_parts": dict(decision.score_parts),
+            "factor_availability": dict(decision.factor_availability),
+            "data_completeness_pct": decision.data_completeness_pct,
+            "core_completeness_pct": decision.core_completeness_pct,
+            "scoring_completeness_pct": decision.scoring_completeness_pct,
+        }
 
         record: Dict[str, Any] = {
             "scanned_at": scanned_at,
@@ -685,17 +708,19 @@ class RailwayShadowWorker:
             "opponent_ranking": match.opponent_ranking,
             "trade_key": trade_key,
             "recommendation_change": recommendation_change,
-            "alert_eligible": recommendation_change in {"INITIAL", "UPGRADE"},
+            "alert_eligible": is_trade and recommendation_change in {"INITIAL", "UPGRADE"},
             "warnings": warnings,
             "errors": list(dict.fromkeys(mapping_errors)),
             "score_parts": decision.score_parts,
             "factor_availability": decision.factor_availability,
             "field_provenance": match.field_provenance,
-            "match_snapshot": match.to_dict(),
-            "paper_trade_status": "OPEN",
-            "paper_entry_price_cents": round(float(market_price or 0.0), 2) or None,
-            "paper_stake_amount": decision.stake_amount,
-            "paper_result": "OPEN",
+            "match_snapshot": match_snapshot,
+            "paper_trade_status": "OPEN" if is_trade else "NOT_ENTERED",
+            "paper_entry_price_cents": (
+                round(float(market_price or 0.0), 2) or None
+            ) if is_trade else None,
+            "paper_stake_amount": decision.stake_amount if is_trade else 0.0,
+            "paper_result": "OPEN" if is_trade else None,
             "paper_pnl": 0.0,
         }
         record["dedupe_key"] = self._dedupe_key(record)
@@ -703,22 +728,41 @@ class RailwayShadowWorker:
 
     @staticmethod
     def _dedupe_key(record: Mapping[str, Any]) -> str:
-        # One qualified row per player per scan cycle. Market price is excluded:
-        # it is informational and must never affect trading identity.
+        """Identify a live player state without using informational market price.
+
+        Version 6.0 included ``cycle_id``, which made every 30-second cycle look
+        unique even when nothing changed. That flooded diagnostic storage and
+        made the duplicate counter meaningless. Version 6.1 hashes the actual
+        tennis/decision state, so a new row is stored only when the state changes.
+        """
         state = {
-            "cycle_id": record.get("cycle_id"),
             "event_key": record.get("event_key"),
             "player": record.get("player"),
+            "event_status": record.get("event_status"),
+            "event_final_result": record.get("event_final_result"),
+            "event_game_result": record.get("event_game_result"),
+            "event_serve": record.get("event_serve"),
+            "scores": (record.get("event_state") or {}).get("scores"),
+            "decision_status": record.get("decision_status"),
+            "decision_reason": record.get("decision_reason"),
+            "stability_score": record.get("stability_score"),
+            "break_lead": record.get("break_lead"),
+            "serving": record.get("serving"),
+            "backed_player_games_in_set": record.get("backed_player_games_in_set"),
+            "opponent_games_in_set": record.get("opponent_games_in_set"),
+            "current_game_score": record.get("current_game_score"),
+            "current_set_breaks_suffered": record.get("current_set_breaks_suffered"),
+            "effective_service_points_won_pct": record.get("effective_service_points_won_pct"),
         }
         encoded = json.dumps(state, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
     def _persist_records(self, current_records: Sequence[Dict[str, Any]]) -> InsertResult:
-        combined = [
-            row
-            for row in list(self.pending_records) + list(current_records)
-            if row.get("decision_status") == "TRADE"
-        ]
+        combined = list(self.pending_records) + list(current_records)
+        if not self.config.save_all_scans:
+            combined = [
+                row for row in combined if row.get("decision_status") == "TRADE"
+            ]
         if not combined:
             self.pending_records = []
             return InsertResult(attempted=0, inserted=0)

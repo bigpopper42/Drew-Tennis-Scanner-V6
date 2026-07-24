@@ -1,4 +1,4 @@
-# Railway Shadow Worker Setup — Version 6.0
+# Railway Shadow Worker Setup — Version 6.1
 
 This deployment is **paper/shadow mode only**. It never signs a transaction, connects a wallet, or places a Polymarket order.
 
@@ -68,7 +68,7 @@ TIMEZONE=America/Phoenix
 SCAN_INTERVAL_SECONDS=30
 SHADOW_BANKROLL=100
 DRY_RUN=false
-SAVE_ALL_SCANS=false
+SAVE_ALL_SCANS=true
 FIXTURES_FALLBACK_INTERVAL_SECONDS=300
 RANKINGS_REFRESH_SECONDS=21600
 MARKET_CACHE_TTL_SECONDS=1800
@@ -89,6 +89,8 @@ A healthy startup produces JSON log lines containing:
 worker_ready
 cycle_complete
 ```
+
+For the first diagnostic deployment, keep `SAVE_ALL_SCANS=true`. After the rejection reasons have been verified, it can be changed to `false` to store only qualified trades.
 
 A completed cycle reports counts for:
 

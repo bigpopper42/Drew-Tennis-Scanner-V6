@@ -57,9 +57,11 @@ def evaluate_match(match: MatchInput) -> Decision:
     )
 
     if hard.status != "ELIGIBLE":
+        blockers = list(dict.fromkeys(hard.failed + hard.unknown))
+        detail = "; ".join(blockers) if blockers else "Qualification could not be verified"
         return Decision(
             status="NO TRADE",
-            reason="One or more final decision-tree qualification rules are not satisfied.",
+            reason=f"Blocked by: {detail}",
             **common,
         )
 

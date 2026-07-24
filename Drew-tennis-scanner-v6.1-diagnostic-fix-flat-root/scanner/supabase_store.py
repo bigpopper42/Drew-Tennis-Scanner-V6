@@ -73,7 +73,7 @@ class SupabaseStore:
                 "Authorization": f"Bearer {self.key}",
                 "Accept-Profile": self.schema,
                 "Content-Profile": self.schema,
-                "User-Agent": "DrewTennisScanner/6.0-Railway",
+                "User-Agent": "DrewTennisScanner/6.1-Railway",
             }
         )
         return session
