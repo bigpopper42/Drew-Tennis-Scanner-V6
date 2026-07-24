@@ -1,4 +1,4 @@
-# Railway Shadow Worker Setup — Version 6.1
+# Railway Shadow Worker Setup — Version 6.2
 
 This deployment is **paper/shadow mode only**. It never signs a transaction, connects a wallet, or places a Polymarket order.
 

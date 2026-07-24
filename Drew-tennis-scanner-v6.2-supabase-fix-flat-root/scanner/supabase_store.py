@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+import math
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -73,7 +74,7 @@ class SupabaseStore:
                 "Authorization": f"Bearer {self.key}",
                 "Accept-Profile": self.schema,
                 "Content-Profile": self.schema,
-                "User-Agent": "DrewTennisScanner/6.1-Railway",
+                "User-Agent": "DrewTennisScanner/6.2-Railway",
             }
         )
         return session
@@ -82,10 +83,26 @@ class SupabaseStore:
         base = f"{self.url}/rest/v1/{table}"
         return f"{base}?{query}" if query else base
 
+    @classmethod
+    def _json_safe(cls, value: Any) -> Any:
+        """Normalize values so Supabase receives strict JSON.
+
+        Live feeds can produce NaN or Infinity in derived metrics. Python's
+        JSON encoder permits those tokens, but PostgREST rejects the whole
+        batch with HTTP 400. Replace non-finite numbers with JSON null.
+        """
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, Mapping):
+            return {str(key): cls._json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [cls._json_safe(item) for item in value]
+        return value
+
     def _raise_for_response(self, response: requests.Response, action: str) -> None:
         if response.ok:
             return
-        preview = (response.text or "")[:500].replace("\n", " ")
+        preview = (response.text or "")[:4000].replace("\n", " ")
         raise SupabaseStoreError(
             f"Supabase {action} failed with HTTP {response.status_code}: {preview}"
         )
@@ -189,9 +206,10 @@ class SupabaseStore:
     ) -> requests.Response:
         headers = {"Prefer": prefer} if prefer else None
         try:
+            safe_payload = self._json_safe(list(payload))
             return self.session.post(
                 self._endpoint(table, query),
-                json=list(payload),
+                json=safe_payload,
                 headers=headers,
                 timeout=self.timeout,
             )
