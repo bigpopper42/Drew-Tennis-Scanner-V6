@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import __version__
 from .api_tennis import get_fixtures, get_live_snapshot, get_rankings
+from .discord_notifier import DiscordNotifier
 from .event_pipeline import build_pipeline, event_competition_group, event_key, event_league
 from .live_scan import PlayerScanResult, scan_both_players
 from .polymarket import (
@@ -87,6 +88,9 @@ class WorkerConfig:
     max_pending_records: int = 5000
     outcome_check_interval_seconds: int = 300
     save_all_scans: bool = False
+    discord_notifications: bool = False
+    discord_webhook_url: str = ""
+    discord_startup_alerts: bool = True
     dry_run: bool = False
     worker_id: str = ""
     railway_deployment_id: str = ""
@@ -125,6 +129,9 @@ class WorkerConfig:
             max_pending_records=_env_int("MAX_PENDING_RECORDS", 5000, 100, 100000),
             outcome_check_interval_seconds=_env_int("OUTCOME_CHECK_INTERVAL_SECONDS", 300, 60, 86400),
             save_all_scans=_env_bool("SAVE_ALL_SCANS", False),
+            discord_notifications=_env_bool("DISCORD_NOTIFICATIONS", False),
+            discord_webhook_url=str(os.getenv("DISCORD_WEBHOOK_URL") or "").strip(),
+            discord_startup_alerts=_env_bool("DISCORD_STARTUP_ALERTS", True),
             dry_run=dry_run,
             worker_id=worker_id,
             railway_deployment_id=str(os.getenv("RAILWAY_DEPLOYMENT_ID") or "").strip(),
@@ -137,6 +144,8 @@ class WorkerConfig:
             raise ValueError("API_TENNIS_KEY is required.")
         if not self.timezone_name:
             raise ValueError("TIMEZONE cannot be empty.")
+        if self.discord_notifications and not self.discord_webhook_url:
+            raise ValueError("DISCORD_WEBHOOK_URL is required when DISCORD_NOTIFICATIONS=true.")
         if not self.dry_run:
             if not self.supabase_url:
                 raise ValueError("SUPABASE_URL is required unless DRY_RUN=true.")
@@ -158,6 +167,9 @@ class WorkerConfig:
             "max_events_per_cycle": self.max_events_per_cycle,
             "outcome_check_interval_seconds": self.outcome_check_interval_seconds,
             "save_all_scans": self.save_all_scans,
+            "discord_notifications": self.discord_notifications,
+            "discord_webhook_configured": bool(self.discord_webhook_url),
+            "discord_startup_alerts": self.discord_startup_alerts,
             "storage_mode": "all_player_evaluations" if self.save_all_scans else "qualified_trades_only",
             "stores_only_qualified_trades": not self.save_all_scans,
             "dry_run": self.dry_run,
@@ -256,6 +268,14 @@ class RailwayShadowWorker:
         self.last_fixture_fallback_at = 0.0
         self.last_outcome_check_at = 0.0
         self.recommendation_state: Dict[str, float] = {}
+        self.pending_discord_alerts: Dict[str, Dict[str, Any]] = {}
+        self.sent_discord_alerts: set[str] = set()
+        self.discord_notifier: Optional[DiscordNotifier] = None
+        if config.discord_notifications:
+            self.discord_notifier = DiscordNotifier(
+                config.discord_webhook_url,
+                timezone_name=config.timezone_name,
+            )
         self.started_at = utc_now_iso()
 
     def install_signal_handlers(self) -> None:
@@ -273,6 +293,14 @@ class RailwayShadowWorker:
         if self.store is not None:
             self.store.verify_tables()
         log_json("worker_ready", config=self.config.public_summary())
+        if self.discord_notifier is not None and self.config.discord_startup_alerts:
+            try:
+                self.discord_notifier.send_startup_message(
+                    version=__version__, worker_id=self.config.worker_id
+                )
+                log_json("discord_startup_alert_sent")
+            except Exception as exc:
+                log_json("discord_startup_alert_failed", error=str(exc))
         self._heartbeat("READY", None, None, {})
 
     def run_forever(self) -> None:
@@ -371,6 +399,9 @@ class RailwayShadowWorker:
                 int(value) for value in report.decision_counts.values()
             )
             report.trade_signals = report.decision_counts.get("TRADE", 0)
+
+            self._queue_discord_alerts(current_records)
+            self._flush_discord_alerts(report)
 
             insert_result = self._persist_records(current_records)
             report.inserted_scans = insert_result.inserted
@@ -756,6 +787,53 @@ class RailwayShadowWorker:
         }
         encoded = json.dumps(state, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    def _queue_discord_alerts(self, records: Sequence[Dict[str, Any]]) -> None:
+        if self.discord_notifier is None:
+            return
+        for record in records:
+            if record.get("decision_status") != "TRADE" or not record.get("alert_eligible"):
+                continue
+            alert_key = self._discord_alert_key(record)
+            if alert_key in self.sent_discord_alerts or alert_key in self.pending_discord_alerts:
+                continue
+            self.pending_discord_alerts[alert_key] = dict(record)
+
+    @staticmethod
+    def _discord_alert_key(record: Mapping[str, Any]) -> str:
+        trade_key = str(record.get("trade_key") or "")
+        stake_pct = record.get("stake_pct")
+        try:
+            stake_label = f"{float(stake_pct):.2f}"
+        except (TypeError, ValueError):
+            stake_label = str(stake_pct or "unknown")
+        return f"{trade_key}|{stake_label}"
+
+    def _flush_discord_alerts(self, report: CycleReport) -> None:
+        if self.discord_notifier is None or not self.pending_discord_alerts:
+            return
+        for alert_key, record in list(self.pending_discord_alerts.items()):
+            try:
+                self.discord_notifier.send_trade_alert(record)
+                self.sent_discord_alerts.add(alert_key)
+                self.pending_discord_alerts.pop(alert_key, None)
+                log_json(
+                    "discord_trade_alert_sent",
+                    player=record.get("player"),
+                    opponent=record.get("opponent"),
+                    stake_pct=record.get("stake_pct"),
+                    stability_score=record.get("stability_score"),
+                )
+            except Exception as exc:
+                warning = f"Discord trade alert failed and will retry: {exc}"
+                if warning not in report.warnings:
+                    report.warnings.append(warning)
+                log_json(
+                    "discord_trade_alert_failed",
+                    player=record.get("player"),
+                    opponent=record.get("opponent"),
+                    error=str(exc),
+                )
 
     def _persist_records(self, current_records: Sequence[Dict[str, Any]]) -> InsertResult:
         combined = list(self.pending_records) + list(current_records)

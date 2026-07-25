@@ -1,4 +1,4 @@
-# Railway Shadow Worker Setup — Version 6.2
+# Railway Shadow Worker Setup — Version 6.4
 
 This deployment is **paper/shadow mode only**. It never signs a transaction, connects a wallet, or places a Polymarket order.
 
@@ -77,9 +77,16 @@ MARKET_SEARCH_PAGES=2
 MIN_MARKET_CONFIDENCE=80
 MAX_EVENTS_PER_CYCLE=0
 MAX_PENDING_RECORDS=5000
+DISCORD_NOTIFICATIONS=true
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/REPLACE_ME
+DISCORD_STARTUP_ALERTS=true
 ```
 
 Use `SUPABASE_SERVICE_ROLE_KEY` instead of `SUPABASE_SECRET_KEY` only when your project still uses the legacy key.
+
+## 5A. Create the Discord webhook
+
+Follow `DISCORD_SETUP.md`. Keep the full webhook URL private and paste it only into Railway's `DISCORD_WEBHOOK_URL` service variable.
 
 ## 6. Deploy and inspect logs
 
@@ -87,6 +94,7 @@ A healthy startup produces JSON log lines containing:
 
 ```text
 worker_ready
+discord_startup_alert_sent
 cycle_complete
 ```
 
