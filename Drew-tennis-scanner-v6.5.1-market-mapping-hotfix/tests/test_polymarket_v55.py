@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from scanner.polymarket import (
+    _build_match_row,
     extract_bbo_prices,
     infer_player_market_side,
     infer_player_prices,
@@ -29,6 +30,26 @@ def row(p1="A. Alpha", p2="B. Beta", live=True, title=None):
 
 
 class MarketLookupTests(unittest.TestCase):
+    def test_total_games_slug_is_not_treated_as_match_winner(self):
+        built = _build_match_row(
+            {
+                "id": "event-vukic-bolt",
+                "title": "A. Vukic vs A. Bolt",
+                "participants": [{"name": "A. Vukic"}, {"name": "A. Bolt"}],
+                "markets": [
+                    {
+                        "id": "total-games",
+                        "question": "A. Vukic vs A. Bolt",
+                        "slug": "tsc-atp-alevuk-alebol-2026-07-26-tg-27pt5",
+                        "sides": [{"name": "Yes"}, {"name": "No"}],
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(built["match_winner_market"])
+        self.assertIsNone(built["market_id"])
+
     @patch("scanner.polymarket._paginate_events")
     @patch("scanner.polymarket.search_us_markets")
     def test_itf_lookup_uses_search_and_sport_fallback(self, search, paginate):

@@ -254,7 +254,74 @@ def _market_text(market: Dict[str, Any]) -> str:
     )
 
 
+def _is_non_match_winner_market(market: Dict[str, Any]) -> bool:
+    """Reject tennis props that cannot represent either player winning the match.
+
+    Polymarket US slugs sometimes abbreviate total-games markets as ``tg`` even
+    when the human-readable search result contains both player names.  Those
+    markets previously earned enough player-name points to be mistaken for a
+    match winner market.
+    """
+    text = _market_text(market)
+    padded = f" {text} "
+    market_type = normalize_name(str(market.get("marketType") or market.get("type") or ""))
+    slug = normalize_name(str(market.get("slug") or ""))
+
+    non_winner_types = {
+        "total",
+        "totals",
+        "total games",
+        "game total",
+        "spread",
+        "handicap",
+        "set winner",
+        "game winner",
+        "exact score",
+        "correct score",
+        "tiebreak",
+        "tie break",
+    }
+    if market_type in non_winner_types:
+        return True
+
+    phrases = (
+        "total games",
+        "games total",
+        "game total",
+        "over under",
+        "set winner",
+        "game winner",
+        "first set",
+        "second set",
+        "third set",
+        "fourth set",
+        "fifth set",
+        "set betting",
+        "set spread",
+        "game spread",
+        "exact score",
+        "correct score",
+        "tiebreak",
+        "tie break",
+        "handicap",
+    )
+    if any(phrase in text for phrase in phrases):
+        return True
+    if re.search(r"(?:^| )(over|under)(?: |$)", text):
+        return True
+    if re.search(r"(?:^| )(spread|total|totals)(?: |$)", text):
+        return True
+
+    # Current Polymarket US tennis slugs use `-tg-<line>` for total games.
+    if re.search(r"(?:^| )tg(?: |$)", slug):
+        return True
+    return False
+
+
 def _match_winner_score(market: Dict[str, Any], players: Sequence[str]) -> int:
+    if _is_non_match_winner_market(market):
+        return -100
+
     text = _market_text(market)
     market_type = normalize_name(str(market.get("marketType") or market.get("type") or ""))
     score = 0
@@ -276,24 +343,6 @@ def _match_winner_score(market: Dict[str, Any], players: Sequence[str]) -> int:
             surname_hits += 1
     score += full_hits * 5 + surname_hits * 2
 
-    # Exclude common non-moneyline tennis markets.
-    exclusions = (
-        "set winner",
-        "game winner",
-        "first set",
-        "second set",
-        "third set",
-        "total games",
-        "over ",
-        "under ",
-        "spread",
-        "handicap",
-        "exact score",
-        "tiebreak",
-        "tie break",
-    )
-    if any(term in text for term in exclusions):
-        score -= 30
     return score
 
 

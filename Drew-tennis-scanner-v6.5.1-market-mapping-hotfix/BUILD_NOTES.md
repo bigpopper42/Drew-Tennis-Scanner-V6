@@ -1,4 +1,11 @@
-# Version 6.5 Build Notes
+# Version 6.5.1 Build Notes
+
+- Fixed Polymarket US tennis total-games markets being misclassified as
+  match-winner markets when both player names appeared in the contract.
+- Added a regression test for
+  `tsc-atp-alevuk-alebol-2026-07-26-tg-27pt5`.
+- Scanner decision rules, 10% execution sizing, and all other safeguards are
+  unchanged.
 
 ## Added
 
