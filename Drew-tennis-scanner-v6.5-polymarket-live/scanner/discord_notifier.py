@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .execution import ExecutionResult
 
 DEFAULT_TIMEOUT = (5.0, 15.0)
 
@@ -62,22 +64,52 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.4-Railway",
+                "User-Agent": "DrewTennisScanner/6.5-Railway",
             }
         )
         return session
 
-    def send_startup_message(self, *, version: str, worker_id: str) -> None:
+    def send_startup_message(
+        self, *, version: str, worker_id: str, execution_enabled: bool = False
+    ) -> None:
         content = (
             "✅ **Drew Tennis Scanner connected**\n"
             f"Version: {version}\n"
             f"Worker: {worker_id}\n"
-            "Discord trade notifications are active."
+            "Discord trade notifications are active.\n"
+            f"Polymarket execution: {'LIVE' if execution_enabled else 'OFF'}"
         )
         self._post(content)
 
     def send_trade_alert(self, record: Mapping[str, Any]) -> None:
         self._post(self.format_trade_alert(record))
+
+    def send_execution_update(self, result: ExecutionResult) -> None:
+        if result.order_created:
+            heading = "✅ **POLYMARKET ORDER PLACED**"
+        elif result.status == "REJECTED":
+            heading = "🛑 **POLYMARKET ORDER BLOCKED**"
+        else:
+            heading = "⚠️ **POLYMARKET EXECUTION ERROR**"
+        details = [
+            heading,
+            f"🎾 **{result.player} vs {result.opponent}**",
+            f"Status: **{result.status}**",
+            f"Reason: {result.reason}",
+        ]
+        if result.market_slug:
+            details.append(f"Market: `{result.market_slug}` · {result.market_side}")
+        if result.stake_amount:
+            details.append(
+                f"Stake: **${result.stake_amount:.2f}** · "
+                f"Price: **{result.player_price_cents:.1f}¢**"
+            )
+            details.append(
+                f"Sizing: 10% of ${result.account_balance:.2f} account balance"
+            )
+        if result.order_id:
+            details.append(f"Order ID: `{result.order_id}`")
+        self._post("\n".join(details))
 
     def _post(self, content: str) -> None:
         payload = {
@@ -125,7 +157,7 @@ class DiscordNotifier:
             f"✅ Break lead: {break_lead} · Serving: {serving}\n"
             f"🏁 Serving for match: {serving_for_match}\n"
             f"💪 Service points won: {service_pct}\n"
-            f"💰 Position size: **{stake_pct}%** ({stake_amount} of {bankroll})\n"
+            f"💰 Scanner tier: **{stake_pct}%** ({stake_amount} of {bankroll})\n"
             f"🔎 {market}\n"
             f"🕒 {time_label}"
         )

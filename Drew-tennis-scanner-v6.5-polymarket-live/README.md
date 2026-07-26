@@ -1,6 +1,21 @@
-# Drew Tennis Scanner Version 6.4
+# Drew Tennis Scanner Version 6.5
 
-Version 6.4 keeps Drew's locked late-match decision tree unchanged and adds immediate Discord webhook notifications for approved `TRADE` signals. The worker still evaluates ATP Tour and Challenger singles continuously, creates 3%, 5%, or 7% paper recommendations from live tennis evidence, and treats Polymarket pricing as informational only.
+Version 6.5 keeps Drew's locked late-match decision tree unchanged and adds guarded Polymarket US execution beside the existing Discord notifications. The scanner still treats Polymarket pricing as informational when deciding whether to trade. Once approved, the separate execution engine checks the live market and places one 10%-of-bankroll order when every safeguard passes.
+
+## Polymarket US execution
+
+Live execution uses Polymarket's official Python SDK and authenticated API. It:
+
+- receives the same structured `TRADE` record used for Discord;
+- independently verifies the market, player side, order-book state, and live price;
+- refuses a second order while any order or position is open;
+- sizes from the authenticated account balance at 10%;
+- previews the exact request before submitting it;
+- marks the order as automatically generated;
+- uses immediate-or-cancel execution with configured slippage protection;
+- sends the result back to Discord.
+
+See `POLYMARKET_EXECUTION_SETUP.md` for the exact Railway variables and emergency stop.
 
 ## Locked strategy behavior
 
@@ -44,9 +59,10 @@ Each stored row includes the complete mapped live state, service metrics, curren
 
 1. Keep the existing Supabase schema and Railway service.
 2. Replace the GitHub repository contents with this archive.
-3. Create a Discord webhook and add the three Discord Railway variables listed in `DISCORD_SETUP.md`.
-4. Redeploy Railway and confirm the startup message appears in Discord.
-5. Keep `SAVE_ALL_SCANS=true` while reviewing rejected decisions.
+3. Keep the existing Discord variables listed in `DISCORD_SETUP.md`.
+4. Add the Polymarket US variables from `POLYMARKET_EXECUTION_SETUP.md`.
+5. Redeploy Railway and confirm the startup message reports `Polymarket execution: LIVE`.
+6. Keep `SAVE_ALL_SCANS=true` while reviewing rejected decisions.
 
 ## Validation
 
@@ -55,6 +71,5 @@ python -m pytest -q
 python -m compileall -q .
 ```
 
-Validated build result: **44 tests passed**.
-
-No real orders are placed. Version 6.4 remains a paper/shadow scanner with notification-only automation.
+Real orders are possible only when `POLYMARKET_EXECUTION_ENABLED=true` and valid
+Polymarket US credentials are configured.

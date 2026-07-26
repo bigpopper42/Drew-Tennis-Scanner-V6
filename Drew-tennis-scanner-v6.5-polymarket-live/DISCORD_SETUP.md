@@ -1,6 +1,8 @@
-# Discord Trade Notification Setup — Version 6.4
+# Discord Trade Notification Setup — Version 6.5
 
-This adds notifications only. It does not change the decision tree and does not place trades.
+Discord notifications do not change the decision tree. When Polymarket
+execution is separately enabled in Railway, Discord also reports whether each
+order was placed, blocked, or failed.
 
 ## 1. Create the Discord channel
 
@@ -39,7 +41,7 @@ Keep every existing API Tennis, Supabase, and scanner variable unchanged.
 
 Railway stages variable changes. Review and deploy them so the new variables become available to the running worker.
 
-The GitHub repository also must contain Version 6.4 before the deployment.
+The GitHub repository also must contain Version 6.5 before the deployment.
 
 ## 5. Confirm it works
 
@@ -47,8 +49,9 @@ After the worker starts, Discord should receive:
 
 ```text
 Drew Tennis Scanner connected
-Version: 6.4
+Version: 6.5
 Discord trade notifications are active.
+Polymarket execution: OFF
 ```
 
 Railway logs should include:

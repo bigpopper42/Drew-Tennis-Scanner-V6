@@ -387,7 +387,7 @@ for key, value in {
 
 st.title("🎾 Tennis Scanner Assistant")
 st.caption(
-    "Version 6.1: Final decision tree plus SAVE_ALL_SCANS diagnostics, informational Polymarket pricing, outcome tracking, and Railway/Supabase monitoring. No real orders are placed."
+    "Version 6.5: live tennis scanning, Discord alerts, Railway/Supabase monitoring, and guarded Polymarket US execution when enabled in Railway."
 )
 
 page = st.selectbox(
@@ -1026,5 +1026,5 @@ if page == "Polymarket search":
 
 st.divider()
 st.caption(
-    "Version 6.1 is a shadow/paper-trading system. It reads Railway results from Supabase but does not place trades or access a wallet."
+    "This dashboard is read-only. Live Polymarket US execution, when enabled, runs only inside the Railway worker."
 )

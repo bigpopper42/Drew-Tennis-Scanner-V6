@@ -86,7 +86,7 @@ def test_discord_formats_basic_trade_alert() -> None:
     assert "Current set: 5-4" in message
     assert "Game: 30-0" in message
     assert "Stability: **86.86**" in message
-    assert "Position size: **5%** ($5.00 of $100.00)" in message
+    assert "Scanner tier: **5%** ($5.00 of $100.00)" in message
     assert "98.0¢" in message
 
 

@@ -170,7 +170,7 @@ grant usage, select on all sequences in schema public to service_role;
 
 comment on table public.worker_status is 'Latest heartbeat and health summary for each Railway scanner worker.';
 comment on table public.scan_cycles is 'One row per API Tennis and Polymarket shadow scan cycle.';
-comment on table public.shadow_scans is 'Qualified Version 6.0 paper-trade scans only. Polymarket data is informational and no real orders are placed.';
+comment on table public.shadow_scans is 'Scanner decisions and paper-performance records. Live order execution is handled separately by the Railway worker.';
 
 
 -- Safe V5.6 -> V6.0 migration for an existing Supabase project.

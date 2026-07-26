@@ -8,13 +8,14 @@ import socket
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import __version__
 from .api_tennis import get_fixtures, get_live_snapshot, get_rankings
 from .discord_notifier import DiscordNotifier
+from .execution import ExecutionConfig, PolymarketExecutionEngine
 from .event_pipeline import build_pipeline, event_competition_group, event_key, event_league
 from .live_scan import PlayerScanResult, scan_both_players
 from .polymarket import (
@@ -24,7 +25,7 @@ from .polymarket import (
     infer_player_prices,
     match_tennis_market,
 )
-from .supabase_store import InsertResult, SupabaseStore, SupabaseStoreError
+from .supabase_store import InsertResult, SupabaseStore
 
 
 TRUE_VALUES = {"1", "true", "yes", "on", "y"}
@@ -91,6 +92,16 @@ class WorkerConfig:
     discord_notifications: bool = False
     discord_webhook_url: str = ""
     discord_startup_alerts: bool = True
+    polymarket_execution_enabled: bool = False
+    polymarket_key_id: str = ""
+    polymarket_secret_key: str = ""
+    execution_bankroll_pct: float = 10.0
+    execution_minimum_order_usd: float = 0.50
+    execution_maximum_order_usd: float = 25.0
+    execution_minimum_price_cents: float = 50.0
+    execution_maximum_price_cents: float = 99.0
+    execution_slippage_ticks: int = 1
+    execution_minimum_market_confidence: float = 80.0
     dry_run: bool = False
     worker_id: str = ""
     railway_deployment_id: str = ""
@@ -132,6 +143,34 @@ class WorkerConfig:
             discord_notifications=_env_bool("DISCORD_NOTIFICATIONS", False),
             discord_webhook_url=str(os.getenv("DISCORD_WEBHOOK_URL") or "").strip(),
             discord_startup_alerts=_env_bool("DISCORD_STARTUP_ALERTS", True),
+            polymarket_execution_enabled=_env_bool(
+                "POLYMARKET_EXECUTION_ENABLED", False
+            ),
+            polymarket_key_id=str(os.getenv("POLYMARKET_KEY_ID") or "").strip(),
+            polymarket_secret_key=str(
+                os.getenv("POLYMARKET_SECRET_KEY") or ""
+            ).strip(),
+            execution_bankroll_pct=_env_float(
+                "EXECUTION_BANKROLL_PCT", 10.0, 0.1, 25.0
+            ),
+            execution_minimum_order_usd=_env_float(
+                "EXECUTION_MIN_ORDER_USD", 0.50, 0.01, 1000.0
+            ),
+            execution_maximum_order_usd=_env_float(
+                "EXECUTION_MAX_ORDER_USD", 25.0, 0.01, 1_000_000.0
+            ),
+            execution_minimum_price_cents=_env_float(
+                "EXECUTION_MIN_PRICE_CENTS", 50.0, 1.0, 99.0
+            ),
+            execution_maximum_price_cents=_env_float(
+                "EXECUTION_MAX_PRICE_CENTS", 99.0, 1.0, 99.0
+            ),
+            execution_slippage_ticks=_env_int(
+                "EXECUTION_SLIPPAGE_TICKS", 1, 0, 20
+            ),
+            execution_minimum_market_confidence=_env_float(
+                "EXECUTION_MIN_MARKET_CONFIDENCE", 80.0, 60.0, 100.0
+            ),
             dry_run=dry_run,
             worker_id=worker_id,
             railway_deployment_id=str(os.getenv("RAILWAY_DEPLOYMENT_ID") or "").strip(),
@@ -146,6 +185,23 @@ class WorkerConfig:
             raise ValueError("TIMEZONE cannot be empty.")
         if self.discord_notifications and not self.discord_webhook_url:
             raise ValueError("DISCORD_WEBHOOK_URL is required when DISCORD_NOTIFICATIONS=true.")
+        if self.polymarket_execution_enabled:
+            if not self.polymarket_key_id:
+                raise ValueError(
+                    "POLYMARKET_KEY_ID is required when POLYMARKET_EXECUTION_ENABLED=true."
+                )
+            if not self.polymarket_secret_key:
+                raise ValueError(
+                    "POLYMARKET_SECRET_KEY is required when POLYMARKET_EXECUTION_ENABLED=true."
+                )
+            if self.execution_minimum_order_usd > self.execution_maximum_order_usd:
+                raise ValueError(
+                    "EXECUTION_MIN_ORDER_USD cannot exceed EXECUTION_MAX_ORDER_USD."
+                )
+            if self.execution_minimum_price_cents > self.execution_maximum_price_cents:
+                raise ValueError(
+                    "EXECUTION_MIN_PRICE_CENTS cannot exceed EXECUTION_MAX_PRICE_CENTS."
+                )
         if not self.dry_run:
             if not self.supabase_url:
                 raise ValueError("SUPABASE_URL is required unless DRY_RUN=true.")
@@ -170,6 +226,19 @@ class WorkerConfig:
             "discord_notifications": self.discord_notifications,
             "discord_webhook_configured": bool(self.discord_webhook_url),
             "discord_startup_alerts": self.discord_startup_alerts,
+            "polymarket_execution_enabled": self.polymarket_execution_enabled,
+            "polymarket_credentials_configured": bool(
+                self.polymarket_key_id and self.polymarket_secret_key
+            ),
+            "execution_bankroll_pct": self.execution_bankroll_pct,
+            "execution_minimum_order_usd": self.execution_minimum_order_usd,
+            "execution_maximum_order_usd": self.execution_maximum_order_usd,
+            "execution_price_range_cents": [
+                self.execution_minimum_price_cents,
+                self.execution_maximum_price_cents,
+            ],
+            "execution_slippage_ticks": self.execution_slippage_ticks,
+            "execution_maximum_open_positions": 1,
             "storage_mode": "all_player_evaluations" if self.save_all_scans else "qualified_trades_only",
             "stores_only_qualified_trades": not self.save_all_scans,
             "dry_run": self.dry_run,
@@ -204,6 +273,10 @@ class CycleReport:
     duplicate_scans: int = 0
     pending_scans: int = 0
     outcomes_resolved: int = 0
+    execution_attempts: int = 0
+    execution_orders: int = 0
+    execution_rejections: int = 0
+    execution_errors: int = 0
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     decision_counts: Dict[str, int] = field(default_factory=dict)
@@ -223,6 +296,10 @@ class CycleReport:
             "duplicate_scans": self.duplicate_scans,
             "pending_scans": self.pending_scans,
             "outcomes_resolved": self.outcomes_resolved,
+            "execution_attempts": self.execution_attempts,
+            "execution_orders": self.execution_orders,
+            "execution_rejections": self.execution_rejections,
+            "execution_errors": self.execution_errors,
             "decision_counts": dict(self.decision_counts),
             "snapshot": dict(self.snapshot_summary),
             "pipeline": dict(self.pipeline_counts),
@@ -270,11 +347,28 @@ class RailwayShadowWorker:
         self.recommendation_state: Dict[str, float] = {}
         self.pending_discord_alerts: Dict[str, Dict[str, Any]] = {}
         self.sent_discord_alerts: set[str] = set()
+        self.pending_execution_signals: Dict[str, Dict[str, Any]] = {}
+        self.processed_execution_signals: set[str] = set()
         self.discord_notifier: Optional[DiscordNotifier] = None
+        self.execution_engine: Optional[PolymarketExecutionEngine] = None
         if config.discord_notifications:
             self.discord_notifier = DiscordNotifier(
                 config.discord_webhook_url,
                 timezone_name=config.timezone_name,
+            )
+        if config.polymarket_execution_enabled:
+            self.execution_engine = PolymarketExecutionEngine(
+                ExecutionConfig(
+                    key_id=config.polymarket_key_id,
+                    secret_key=config.polymarket_secret_key,
+                    bankroll_pct=config.execution_bankroll_pct,
+                    minimum_order_usd=config.execution_minimum_order_usd,
+                    maximum_order_usd=config.execution_maximum_order_usd,
+                    minimum_price_cents=config.execution_minimum_price_cents,
+                    maximum_price_cents=config.execution_maximum_price_cents,
+                    slippage_ticks=config.execution_slippage_ticks,
+                    minimum_market_confidence=config.execution_minimum_market_confidence,
+                )
             )
         self.started_at = utc_now_iso()
 
@@ -296,7 +390,9 @@ class RailwayShadowWorker:
         if self.discord_notifier is not None and self.config.discord_startup_alerts:
             try:
                 self.discord_notifier.send_startup_message(
-                    version=__version__, worker_id=self.config.worker_id
+                    version=__version__,
+                    worker_id=self.config.worker_id,
+                    execution_enabled=self.config.polymarket_execution_enabled,
                 )
                 log_json("discord_startup_alert_sent")
             except Exception as exc:
@@ -318,6 +414,8 @@ class RailwayShadowWorker:
             sleep_seconds = max(0.0, self.config.scan_interval_seconds - elapsed)
             self.stop_event.wait(sleep_seconds)
         self._heartbeat("STOPPED", None, None, {})
+        if self.execution_engine is not None:
+            self.execution_engine.close()
         log_json("worker_stopped")
 
     def run_cycle(self) -> CycleReport:
@@ -402,6 +500,8 @@ class RailwayShadowWorker:
 
             self._queue_discord_alerts(current_records)
             self._flush_discord_alerts(report)
+            self._queue_execution_signals(current_records)
+            self._flush_execution_signals(report)
 
             insert_result = self._persist_records(current_records)
             report.inserted_scans = insert_result.inserted
@@ -834,6 +934,60 @@ class RailwayShadowWorker:
                     opponent=record.get("opponent"),
                     error=str(exc),
                 )
+
+    def _queue_execution_signals(
+        self, records: Sequence[Dict[str, Any]]
+    ) -> None:
+        if self.execution_engine is None:
+            return
+        for record in records:
+            if (
+                record.get("decision_status") != "TRADE"
+                or not record.get("alert_eligible")
+            ):
+                continue
+            signal_key = self.execution_engine.signal_key(record)
+            if (
+                signal_key in self.processed_execution_signals
+                or signal_key in self.pending_execution_signals
+            ):
+                continue
+            self.pending_execution_signals[signal_key] = dict(record)
+
+    def _flush_execution_signals(self, report: CycleReport) -> None:
+        if self.execution_engine is None or not self.pending_execution_signals:
+            return
+        for signal_key, record in list(self.pending_execution_signals.items()):
+            report.execution_attempts += 1
+            result = self.execution_engine.execute_trade(record)
+            self.processed_execution_signals.add(signal_key)
+            self.pending_execution_signals.pop(signal_key, None)
+
+            if result.order_created:
+                report.execution_orders += 1
+                log_json("polymarket_order_created", **result.log_fields())
+            elif result.status == "REJECTED":
+                report.execution_rejections += 1
+                log_json("polymarket_order_rejected", **result.log_fields())
+            else:
+                report.execution_errors += 1
+                report.warnings.append(result.reason)
+                log_json("polymarket_order_failed", **result.log_fields())
+
+            if self.discord_notifier is not None:
+                try:
+                    self.discord_notifier.send_execution_update(result)
+                except Exception as exc:
+                    warning = f"Discord execution update failed: {exc}"
+                    if warning not in report.warnings:
+                        report.warnings.append(warning)
+                    log_json(
+                        "discord_execution_update_failed",
+                        player=result.player,
+                        opponent=result.opponent,
+                        execution_status=result.status,
+                        error=str(exc),
+                    )
 
     def _persist_records(self, current_records: Sequence[Dict[str, Any]]) -> InsertResult:
         combined = list(self.pending_records) + list(current_records)

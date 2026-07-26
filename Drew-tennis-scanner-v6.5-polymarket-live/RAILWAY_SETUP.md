@@ -1,6 +1,8 @@
-# Railway Shadow Worker Setup — Version 6.4
+# Railway Worker Setup — Version 6.5
 
-This deployment is **paper/shadow mode only**. It never signs a transaction, connects a wallet, or places a Polymarket order.
+This worker scans live tennis, stores shadow diagnostics, sends Discord alerts,
+and can place guarded Polymarket US orders when live execution is explicitly
+enabled. Follow `POLYMARKET_EXECUTION_SETUP.md` for the trading variables.
 
 ## 1. Create the Supabase database
 
@@ -80,6 +82,7 @@ MAX_PENDING_RECORDS=5000
 DISCORD_NOTIFICATIONS=true
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/REPLACE_ME
 DISCORD_STARTUP_ALERTS=true
+POLYMARKET_EXECUTION_ENABLED=false
 ```
 
 Use `SUPABASE_SERVICE_ROLE_KEY` instead of `SUPABASE_SECRET_KEY` only when your project still uses the legacy key.
@@ -144,7 +147,9 @@ limit 50;
 
 - Keep exactly one Railway replica during initial validation.
 - Keep `DRY_RUN=false` only after the Supabase schema is installed.
-- Do not add wallet keys or Polymarket trading credentials.
+- Put Polymarket credentials only in Railway Variables, never GitHub.
+- Keep `POLYMARKET_EXECUTION_ENABLED=false` until all variables in
+  `POLYMARKET_EXECUTION_SETUP.md` are installed and reviewed.
 - Do not use Railway Cron. Railway cron cannot run every 30 seconds and is not intended for continuous live scanning.
 - The worker caches market matches, refreshes rankings slowly, retries unmatched markets, and deduplicates unchanged match states before writing to Supabase.
 
