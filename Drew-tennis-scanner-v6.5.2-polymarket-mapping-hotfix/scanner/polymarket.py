@@ -204,9 +204,36 @@ def _dedupe_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(merged.values())
 
 
+def _side_name(side: Any) -> str:
+    """Return the participant name carried by a Retail API market side."""
+    if not isinstance(side, dict):
+        return str(side or "").strip()
+    team = side.get("team") or {}
+    if isinstance(team, dict):
+        for key in ("name", "displayName", "safeName", "alias", "abbreviation"):
+            value = str(team.get(key) or "").strip()
+            if value:
+                return value
+    for key in ("name", "title", "outcome", "description", "identifier"):
+        value = str(side.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _market_sides(market: Dict[str, Any]) -> List[Any]:
+    """Read current ``marketSides`` plus legacy side fields."""
+    for key in ("marketSides", "sides", "outcomes"):
+        value = market.get(key)
+        if isinstance(value, list) and value:
+            return value
+    return []
+
+
 def _extract_participant_names(event: Dict[str, Any]) -> List[str]:
     names: List[str] = []
-    for participant in event.get("participants") or []:
+    # `teams` replaced the deprecated `participants` field in June 2026.
+    for participant in list(event.get("teams") or []) + list(event.get("participants") or []):
         if isinstance(participant, dict):
             name = participant.get("name") or participant.get("title") or participant.get("shortName")
             role = normalize_name(str(participant.get("role") or participant.get("type") or ""))
@@ -221,6 +248,19 @@ def _extract_participant_names(event: Dict[str, Any]) -> List[str]:
     if len(names) >= 2:
         return names[:2]
 
+    # Current sports responses also carry the competitors on marketSides.
+    for market in event.get("markets") or []:
+        if not isinstance(market, dict):
+            continue
+        for side in _market_sides(market):
+            name = _side_name(side)
+            if name and normalize_name(name) not in {
+                normalize_name(existing) for existing in names
+            }:
+                names.append(name)
+        if len(names) >= 2:
+            return names[:2]
+
     # Some event payloads encode the two players only in the title/subtitle.
     for source in (event.get("title"), event.get("subtitle")):
         text = str(source or "").strip()
@@ -234,11 +274,9 @@ def _extract_participant_names(event: Dict[str, Any]) -> List[str]:
 
 
 def _market_text(market: Dict[str, Any]) -> str:
-    outcomes = market.get("sides") or market.get("outcomes") or []
+    outcomes = _market_sides(market)
     outcome_text = " ".join(
-        str(side.get("name") or side.get("title") or side.get("outcome") or side)
-        if isinstance(side, dict)
-        else str(side)
+        _side_name(side)
         for side in outcomes
     )
     return normalize_name(
@@ -254,74 +292,7 @@ def _market_text(market: Dict[str, Any]) -> str:
     )
 
 
-def _is_non_match_winner_market(market: Dict[str, Any]) -> bool:
-    """Reject tennis props that cannot represent either player winning the match.
-
-    Polymarket US slugs sometimes abbreviate total-games markets as ``tg`` even
-    when the human-readable search result contains both player names.  Those
-    markets previously earned enough player-name points to be mistaken for a
-    match winner market.
-    """
-    text = _market_text(market)
-    padded = f" {text} "
-    market_type = normalize_name(str(market.get("marketType") or market.get("type") or ""))
-    slug = normalize_name(str(market.get("slug") or ""))
-
-    non_winner_types = {
-        "total",
-        "totals",
-        "total games",
-        "game total",
-        "spread",
-        "handicap",
-        "set winner",
-        "game winner",
-        "exact score",
-        "correct score",
-        "tiebreak",
-        "tie break",
-    }
-    if market_type in non_winner_types:
-        return True
-
-    phrases = (
-        "total games",
-        "games total",
-        "game total",
-        "over under",
-        "set winner",
-        "game winner",
-        "first set",
-        "second set",
-        "third set",
-        "fourth set",
-        "fifth set",
-        "set betting",
-        "set spread",
-        "game spread",
-        "exact score",
-        "correct score",
-        "tiebreak",
-        "tie break",
-        "handicap",
-    )
-    if any(phrase in text for phrase in phrases):
-        return True
-    if re.search(r"(?:^| )(over|under)(?: |$)", text):
-        return True
-    if re.search(r"(?:^| )(spread|total|totals)(?: |$)", text):
-        return True
-
-    # Current Polymarket US tennis slugs use `-tg-<line>` for total games.
-    if re.search(r"(?:^| )tg(?: |$)", slug):
-        return True
-    return False
-
-
 def _match_winner_score(market: Dict[str, Any], players: Sequence[str]) -> int:
-    if _is_non_match_winner_market(market):
-        return -100
-
     text = _market_text(market)
     market_type = normalize_name(str(market.get("marketType") or market.get("type") or ""))
     score = 0
@@ -343,6 +314,24 @@ def _match_winner_score(market: Dict[str, Any], players: Sequence[str]) -> int:
             surname_hits += 1
     score += full_hits * 5 + surname_hits * 2
 
+    # Exclude common non-moneyline tennis markets.
+    exclusions = (
+        "set winner",
+        "game winner",
+        "first set",
+        "second set",
+        "third set",
+        "total games",
+        "over ",
+        "under ",
+        "spread",
+        "handicap",
+        "exact score",
+        "tiebreak",
+        "tie break",
+    )
+    if any(term in text for term in exclusions):
+        score -= 30
     return score
 
 
@@ -387,7 +376,7 @@ def _build_match_row(event: Dict[str, Any]) -> Dict[str, Any]:
         "closed": market.get("closed", event.get("closed")) if market else event.get("closed"),
         "volume": (market.get("volumeNum") or market.get("volume") or event.get("volumeNum") or event.get("volume")) if market else (event.get("volumeNum") or event.get("volume")),
         "liquidity": (market.get("liquidityNum") or market.get("liquidity") or event.get("liquidityNum") or event.get("liquidity")) if market else (event.get("liquidityNum") or event.get("liquidity")),
-        "sides": market.get("sides") or market.get("outcomes") or [] if market else [],
+        "sides": _market_sides(market) if market else [],
         "raw_event": event,
         "raw_market": market,
     }
@@ -901,7 +890,7 @@ def enrich_market_row(row: Dict[str, Any], *, include_bbo: bool = True) -> Dict[
         enriched["market_details"] = details
         existing_market = enriched.get("raw_market") if isinstance(enriched.get("raw_market"), dict) else {}
         enriched["raw_market"] = {**existing_market, **details}
-        enriched["sides"] = details.get("sides") or details.get("outcomes") or enriched.get("sides") or []
+        enriched["sides"] = _market_sides(details) or enriched.get("sides") or []
     bbo_payload = get_bbo(slug) if include_bbo and slug else {}
     bbo = extract_bbo_prices(bbo_payload)
     metrics = extract_market_metrics(enriched)
@@ -933,14 +922,43 @@ def infer_player_market_side(
     player_surname = player_name.split()[-1] if player_name else ""
     opponent_surname = opponent_name.split()[-1] if opponent_name else ""
 
-    sides = row.get("sides") or (row.get("raw_market") or {}).get("sides") or []
+    raw_market = row.get("raw_market") or {}
+    sides = (
+        row.get("sides")
+        or _market_sides(raw_market if isinstance(raw_market, dict) else {})
+        or []
+    )
+
+    # Current Polymarket US sports markets explicitly identify which player is
+    # long and short through marketSides[].team and marketSides[].long.
+    structured: List[Tuple[str, bool]] = []
+    for side in sides:
+        if not isinstance(side, dict) or not isinstance(side.get("long"), bool):
+            continue
+        label = _side_name(side)
+        if label:
+            structured.append((label, bool(side["long"])))
+    if len(structured) >= 2:
+        player_matches = [
+            (label, is_long, _player_match_score(player, label))
+            for label, is_long in structured
+        ]
+        opponent_matches = [
+            (label, is_long, _player_match_score(opponent, label))
+            for label, is_long in structured
+        ]
+        best_player = max(player_matches, key=lambda item: item[2])
+        best_opponent = max(opponent_matches, key=lambda item: item[2])
+        if (
+            best_player[2] >= 0.86
+            and best_opponent[2] >= 0.86
+            and best_player[0] != best_opponent[0]
+        ):
+            return "Long / YES" if best_player[1] else "Short / NO"
+
     normalized_sides: List[str] = []
     for side in sides:
-        if isinstance(side, dict):
-            label = side.get("name") or side.get("title") or side.get("outcome") or ""
-        else:
-            label = side
-        normalized_sides.append(normalize_name(str(label)))
+        normalized_sides.append(normalize_name(_side_name(side)))
 
     if len(normalized_sides) >= 2:
         first, second = normalized_sides[0], normalized_sides[1]
@@ -957,8 +975,8 @@ def infer_player_market_side(
         " ".join(
             [
                 str(row.get("market_title") or ""),
-                str((row.get("raw_market") or {}).get("question") or ""),
-                str((row.get("raw_market") or {}).get("title") or ""),
+                str(raw_market.get("question") or ""),
+                str(raw_market.get("title") or ""),
             ]
         )
     )

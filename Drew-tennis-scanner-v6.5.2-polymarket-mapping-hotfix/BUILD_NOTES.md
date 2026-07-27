@@ -1,11 +1,14 @@
-# Version 6.5.1 Build Notes
+# Version 6.5.2 Build Notes
 
-- Fixed Polymarket US tennis total-games markets being misclassified as
-  match-winner markets when both player names appeared in the contract.
-- Added a regression test for
-  `tsc-atp-alevuk-alebol-2026-07-26-tg-27pt5`.
-- Scanner decision rules, 10% execution sizing, and all other safeguards are
-  unchanged.
+## 6.5.2 execution mapping hotfix
+
+- Reads current Polymarket US sports competitors from `teams`.
+- Reads current long/short player identity from `marketSides[].team` and
+  `marketSides[].long`.
+- Retains legacy `participants`, `sides`, and `outcomes` compatibility.
+- Adds an explicit `Trade: <player>` line to every Discord scanner alert.
+- Adds regression coverage for S. Kwon vs E. Winter and A. Mayo vs
+  R. Pascual Ferra.
 
 ## Added
 

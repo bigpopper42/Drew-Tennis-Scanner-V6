@@ -1,10 +1,6 @@
-# Drew Tennis Scanner Version 6.5.1
+# Drew Tennis Scanner Version 6.5.2
 
-Version 6.5.1 is a market-matching safety hotfix. It rejects total-games
-contracts such as `*-tg-27pt5` before they can be mistaken for match-winner
-markets. The scanner decision tree and live execution sizing are unchanged.
-
-Version 6.5 keeps Drew's locked late-match decision tree unchanged and adds guarded Polymarket US execution beside the existing Discord notifications. The scanner still treats Polymarket pricing as informational when deciding whether to trade. Once approved, the separate execution engine checks the live market and places one 10%-of-bankroll order when every safeguard passes.
+Version 6.5.2 keeps Drew's locked late-match decision tree unchanged and fixes Polymarket US market/player mapping for the current `teams` and `marketSides` API fields. The scanner still treats Polymarket pricing as informational when deciding whether to trade. Once approved, the separate execution engine checks the live market and places one 10%-of-bankroll order when every safeguard passes.
 
 ## Polymarket US execution
 

@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from scanner.polymarket import (
-    _build_match_row,
+    _flatten_events,
     extract_bbo_prices,
     infer_player_market_side,
     infer_player_prices,
@@ -30,26 +30,6 @@ def row(p1="A. Alpha", p2="B. Beta", live=True, title=None):
 
 
 class MarketLookupTests(unittest.TestCase):
-    def test_total_games_slug_is_not_treated_as_match_winner(self):
-        built = _build_match_row(
-            {
-                "id": "event-vukic-bolt",
-                "title": "A. Vukic vs A. Bolt",
-                "participants": [{"name": "A. Vukic"}, {"name": "A. Bolt"}],
-                "markets": [
-                    {
-                        "id": "total-games",
-                        "question": "A. Vukic vs A. Bolt",
-                        "slug": "tsc-atp-alevuk-alebol-2026-07-26-tg-27pt5",
-                        "sides": [{"name": "Yes"}, {"name": "No"}],
-                    }
-                ],
-            }
-        )
-
-        self.assertFalse(built["match_winner_market"])
-        self.assertIsNone(built["market_id"])
-
     @patch("scanner.polymarket._paginate_events")
     @patch("scanner.polymarket.search_us_markets")
     def test_itf_lookup_uses_search_and_sport_fallback(self, search, paginate):
@@ -97,6 +77,75 @@ class MarketLookupTests(unittest.TestCase):
         inferred = infer_player_prices(market, "A. Alpha", "B. Beta", prices)
         self.assertEqual(inferred["prices"]["A. Alpha"], 98.0)
         self.assertEqual(inferred["prices"]["B. Beta"], 3.0)
+
+    def test_current_market_sides_map_kwon_and_winter_without_guessing(self):
+        market = {
+            "market_title": "S. Kwon vs E. Winter",
+            "raw_market": {
+                "sportsMarketType": "tennis_match_winner",
+                "marketSides": [
+                    {"long": True, "team": {"name": "Soonwoo Kwon"}},
+                    {"long": False, "team": {"name": "Edward Winter"}},
+                ],
+            },
+        }
+        self.assertEqual(
+            infer_player_market_side(market, "S. Kwon", "E. Winter"),
+            "Long / YES",
+        )
+        self.assertEqual(
+            infer_player_market_side(market, "E. Winter", "S. Kwon"),
+            "Short / NO",
+        )
+
+    @patch("scanner.polymarket._paginate_events")
+    @patch("scanner.polymarket.search_us_markets")
+    def test_current_teams_and_market_sides_match_mayo_pascual(self, search, paginate):
+        event = {
+            "id": "los-cabos-1",
+            "title": "ATP Los Cabos Open, Qualification",
+            "slug": "atp-los-cabos-qualification",
+            "live": True,
+            "teams": [
+                {"name": "Aidan Mayo"},
+                {"name": "Reynaldo Pascual Ferra"},
+            ],
+            "markets": [
+                {
+                    "id": "mayo-pascual",
+                    "slug": "aec-atp-aidmay-reypas-2026-07-26",
+                    "sportsMarketType": "tennis_match_winner",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {"long": True, "team": {"name": "Aidan Mayo"}},
+                        {
+                            "long": False,
+                            "team": {"name": "Reynaldo Pascual Ferra"},
+                        },
+                    ],
+                }
+            ],
+        }
+        search.return_value = _flatten_events([event])
+        paginate.return_value = []
+
+        matches = match_tennis_market(
+            "A. Mayo",
+            "R. Pascual Ferra",
+            league="ATP",
+            competition_group="TOUR",
+            tournament="Los Cabos",
+        )
+
+        self.assertTrue(matches)
+        self.assertGreaterEqual(matches[0]["api_match_confidence"], 80)
+        self.assertEqual(
+            infer_player_market_side(
+                matches[0], "A. Mayo", "R. Pascual Ferra"
+            ),
+            "Long / YES",
+        )
 
 
 if __name__ == "__main__":

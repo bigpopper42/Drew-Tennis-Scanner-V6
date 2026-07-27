@@ -83,6 +83,7 @@ def test_discord_formats_basic_trade_alert() -> None:
 
     assert "ATP TRADE SIGNAL" in message
     assert "A. Michelsen vs M. Lajal" in message
+    assert "Trade: **A. Michelsen**" in message
     assert "Current set: 5-4" in message
     assert "Game: 30-0" in message
     assert "Stability: **86.86**" in message

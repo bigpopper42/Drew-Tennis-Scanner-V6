@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.2-Railway",
             }
         )
         return session
@@ -151,6 +151,7 @@ class DiscordNotifier:
         return (
             "🚨 **ATP TRADE SIGNAL**\n\n"
             f"🎾 **{player} vs {opponent}**\n"
+            f"🎯 Trade: **{player}**\n"
             f"🏆 {league} · {tournament}\n"
             f"📍 Current set: {current_set} · Game: {current_game}\n"
             f"📈 Stability: **{stability}**\n"
