@@ -1,13 +1,13 @@
-# Drew Tennis Scanner Version 6.5.3
+# Drew Tennis Scanner Version 6.5.4
 
-Version 6.5.3 keeps Drew's locked late-match decision tree unchanged and makes the authenticated Polymarket US `marketSides[].team` and `marketSides[].long` response authoritative for execution-side mapping. Public discovery may leave the side unresolved; execution now retrieves the live market, maps both competitors to different sides, and uses the backed player's live `long` value. Ambiguous names still reject. Once approved, the separate execution engine checks the live market and places one 10%-of-bankroll order when every safeguard passes.
+Version 6.5.4 keeps Drew's locked late-match decision tree unchanged and fixes both authenticated player-side mapping and the Polymarket US order-book response parser. The execution engine now uses live `marketSides` for the backed player and unwraps the documented `marketData` object before checking state and executable prices.
 
 ## Polymarket US execution
 
 Live execution uses Polymarket's official Python SDK and authenticated API. It:
 
 - receives the same structured `TRADE` record used for Discord;
-- independently verifies the market, authenticated player side, order-book state, and live price;
+- independently verifies the market, player side, order-book state, and live price;
 - refuses a second order while any order or position is open;
 - sizes from the authenticated account balance at 10%;
 - previews the exact request before submitting it;
@@ -43,7 +43,7 @@ The alert includes:
 - Stability Score
 - break lead and serving state
 - effective service-points-won percentage
-- recommended position size
+- live execution size rule
 - informational Polymarket match and price when available
 - Arizona-local timestamp when `TIMEZONE=America/Phoenix`
 
@@ -67,9 +67,13 @@ Each stored row includes the complete mapped live state, service metrics, curren
 ## Validation
 
 ```bash
-python -m pytest -q
+python -m pytest -q  # 64 passed
 python -m compileall -q .
 ```
 
 Real orders are possible only when `POLYMARKET_EXECUTION_ENABLED=true` and valid
 Polymarket US credentials are configured.
+
+## Production validation
+
+The code-level fix is complete and the complete test suite passes. A live Railway signal is still required to validate the authenticated production API and actual order submission end to end.

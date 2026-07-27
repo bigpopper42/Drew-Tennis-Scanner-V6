@@ -145,29 +145,31 @@ class PolymarketExecutionEngine:
                 return reject("Another Polymarket position is already open.")
 
             market_payload = self.client.markets.retrieve_by_slug(market_slug)
-            market = (market_payload or {}).get("market") or {}
-            if not isinstance(market, Mapping) or not market:
+            market = _market_payload(market_payload)
+            if not market:
                 return reject("Polymarket US did not return the matched market.")
             if market.get("active") is not True or market.get("closed") is True:
                 return reject("Polymarket market is not active and tradable.")
-
-            # The authenticated market is authoritative. Public discovery may
-            # not include enough side metadata, so resolve the backed player
-            # again from live marketSides before deciding whether to reject.
-            live_market_side = _live_market_side(market, player, opponent)
-            if live_market_side in {LONG_SIDE, SHORT_SIDE}:
-                market_side = live_market_side
-            elif market_side not in {LONG_SIDE, SHORT_SIDE}:
-                return reject(
-                    "Backed player could not be mapped safely to YES or NO."
-                )
-
             if not self._market_names_match(market, player, opponent):
                 return reject("Live market names do not match the scanner signal.")
 
-            book = self.client.markets.book(market_slug) or {}
-            if str(book.get("state") or "") != OPEN_MARKET_STATE:
-                return reject("Polymarket order book is suspended, halted, or closed.")
+            live_market_side = self._live_market_side(market, player, opponent)
+            if live_market_side in {LONG_SIDE, SHORT_SIDE}:
+                market_side = live_market_side
+            elif market_side not in {LONG_SIDE, SHORT_SIDE}:
+                return reject("Backed player could not be mapped safely to YES or NO.")
+
+            raw_book = self.client.markets.book(market_slug) or {}
+            book = _market_data(raw_book)
+            if not book:
+                return reject("Polymarket US returned no usable order-book data.")
+            book_state = str(book.get("state") or "").strip().upper()
+            if not book_state:
+                return reject("Polymarket order-book state was missing from the API response.")
+            if book_state not in {OPEN_MARKET_STATE, "OPEN"}:
+                return reject(
+                    f"Polymarket order book is not open (reported state: {book_state})."
+                )
 
             long_reference, player_price = self._execution_prices(book, market_side)
             player_price_cents = round(player_price * 100.0, 2)
@@ -282,17 +284,28 @@ class PolymarketExecutionEngine:
         return False
 
     @staticmethod
+    def _live_market_side(
+        market: Mapping[str, Any], player: str, opponent: str
+    ) -> str | None:
+        assignment = _structured_side_assignment(market, player, opponent)
+        if assignment is None:
+            return None
+        player_index, _opponent_index, sides = assignment
+        return LONG_SIDE if sides[player_index]["long"] is True else SHORT_SIDE
+
+    @staticmethod
     def _market_names_match(
         market: Mapping[str, Any], player: str, opponent: str
     ) -> bool:
         structured_sides = _structured_market_sides(market)
-        if len(structured_sides) >= 2:
-            return _mapped_side_indexes(structured_sides, player, opponent) is not None
+        if structured_sides:
+            return _structured_side_assignment(market, player, opponent) is not None
 
         haystack = _normalize(
             " ".join(
                 [
                     str(market.get("title") or ""),
+                    str(market.get("question") or ""),
                     str(market.get("slug") or ""),
                     str(market.get("description") or ""),
                 ]
@@ -416,6 +429,26 @@ def _amount_value(value: Any) -> float | None:
     return number if 0.0 < number < 1.0 else None
 
 
+def _market_payload(payload: Any) -> Mapping[str, Any]:
+    if not isinstance(payload, Mapping):
+        return {}
+    nested = payload.get("market")
+    if isinstance(nested, Mapping) and nested:
+        return nested
+    return payload
+
+
+def _market_data(payload: Any) -> Mapping[str, Any]:
+    if not isinstance(payload, Mapping):
+        return {}
+    nested = payload.get("marketData")
+    if isinstance(nested, Mapping):
+        return nested
+    # Keep compatibility with earlier SDK/test fixtures while treating the
+    # documented marketData object as authoritative when it is present.
+    return payload
+
+
 def _normalize(value: str) -> str:
     ascii_text = (
         unicodedata.normalize("NFKD", value or "")
@@ -425,109 +458,109 @@ def _normalize(value: str) -> str:
     return " ".join(re.sub(r"[^a-zA-Z0-9 ]+", " ", ascii_text).lower().split())
 
 
-def _team_names(side: Mapping[str, Any]) -> tuple[str, ...]:
-    """Return every usable competitor label from a live market side."""
-    team = side.get("team")
-    if not isinstance(team, Mapping):
-        return ()
+def _team_names(side: Mapping[str, Any]) -> list[str]:
     names: list[str] = []
-    seen: set[str] = set()
-    for field in ("name", "displayName", "safeName", "alias", "abbreviation"):
-        value = str(team.get(field) or "").strip()
-        normalized = _normalize(value)
-        if normalized and normalized not in seen:
-            seen.add(normalized)
+    team = side.get("team")
+    if isinstance(team, Mapping):
+        for key in ("name", "displayName", "safeName", "alias", "abbreviation"):
+            value = str(team.get(key) or "").strip()
+            if value and _normalize(value) not in {_normalize(item) for item in names}:
+                names.append(value)
+    for key in ("name", "displayName", "safeName", "alias", "abbreviation"):
+        value = str(side.get(key) or "").strip()
+        if value and _normalize(value) not in {_normalize(item) for item in names}:
             names.append(value)
-    return tuple(names)
+    return names
 
 
-def _structured_market_sides(
-    market: Mapping[str, Any],
-) -> list[tuple[int, bool, tuple[str, ...]]]:
-    sides = market.get("marketSides")
-    if not isinstance(sides, list):
+def _structured_market_sides(market: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_sides = market.get("marketSides")
+    if not isinstance(raw_sides, list):
         return []
-    structured: list[tuple[int, bool, tuple[str, ...]]] = []
-    for index, side in enumerate(sides):
-        if not isinstance(side, Mapping) or not isinstance(side.get("long"), bool):
+    sides: list[dict[str, Any]] = []
+    for raw_side in raw_sides:
+        if not isinstance(raw_side, Mapping) or not isinstance(raw_side.get("long"), bool):
             continue
-        names = _team_names(side)
-        if names:
-            structured.append((index, bool(side["long"]), names))
-    return structured
+        names = _team_names(raw_side)
+        if not names:
+            continue
+        sides.append({"long": bool(raw_side["long"]), "names": names})
+    return sides
 
 
-def _competitor_name_matches(expected: str, candidate: str) -> bool:
-    """Conservatively match exact names or first-name/initial variants."""
-    expected_name = _normalize(expected)
-    candidate_name = _normalize(candidate)
-    if not expected_name or not candidate_name:
+def _surname_sequences_agree(left: list[str], right: list[str]) -> bool:
+    if not left or not right:
         return False
-    if expected_name == candidate_name:
+    if left == right:
         return True
-
-    expected_tokens = expected_name.split()
-    candidate_tokens = candidate_name.split()
-    if len(expected_tokens) < 2 or len(candidate_tokens) < 2:
-        return False
-    if expected_tokens[-1] != candidate_tokens[-1]:
-        return False
-
-    expected_first = expected_tokens[0]
-    candidate_first = candidate_tokens[0]
-    if expected_first == candidate_first:
-        return True
-    if len(expected_first) == 1:
-        return candidate_first.startswith(expected_first)
-    if len(candidate_first) == 1:
-        return expected_first.startswith(candidate_first)
-    return False
+    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+    width = len(shorter)
+    return any(longer[index : index + width] == shorter for index in range(len(longer) - width + 1))
 
 
-def _mapped_side_indexes(
-    sides: list[tuple[int, bool, tuple[str, ...]]],
-    player: str,
-    opponent: str,
-) -> tuple[int, int] | None:
-    player_indexes = {
-        index
-        for index, _is_long, names in sides
-        if any(_competitor_name_matches(player, name) for name in names)
-    }
-    opponent_indexes = {
-        index
-        for index, _is_long, names in sides
-        if any(_competitor_name_matches(opponent, name) for name in names)
-    }
-    if len(player_indexes) != 1 or len(opponent_indexes) != 1:
+def _name_match_score(expected: str, candidate: str) -> float:
+    left = _normalize(expected)
+    right = _normalize(candidate)
+    if not left or not right:
+        return 0.0
+    if left == right:
+        return 1.0
+
+    left_tokens = left.split()
+    right_tokens = right.split()
+    if len(left_tokens) < 2 or len(right_tokens) < 2:
+        return 0.0
+
+    left_first, right_first = left_tokens[0], right_tokens[0]
+    left_surnames, right_surnames = left_tokens[1:], right_tokens[1:]
+    if not _surname_sequences_agree(left_surnames, right_surnames):
+        return 0.0
+
+    exact_surnames = left_surnames == right_surnames
+    if left_first == right_first:
+        return 0.99 if exact_surnames else 0.96
+    if (len(left_first) == 1 or len(right_first) == 1) and left_first[0] == right_first[0]:
+        return 0.97 if exact_surnames else 0.94
+    return 0.0
+
+
+def _unique_best_side(
+    expected: str, sides: list[dict[str, Any]], *, minimum_score: float = 0.94
+) -> int | None:
+    scores = [
+        max((_name_match_score(expected, name) for name in side["names"]), default=0.0)
+        for side in sides
+    ]
+    if not scores:
         return None
-    player_index = next(iter(player_indexes))
-    opponent_index = next(iter(opponent_indexes))
-    if player_index == opponent_index:
+    best = max(scores)
+    if best < minimum_score:
         return None
-
-    side_by_index = {index: is_long for index, is_long, _names in sides}
-    if side_by_index[player_index] == side_by_index[opponent_index]:
-        return None
-    return player_index, opponent_index
+    winners = [index for index, score in enumerate(scores) if abs(score - best) < 1e-9]
+    return winners[0] if len(winners) == 1 else None
 
 
-def _live_market_side(
+def _structured_side_assignment(
     market: Mapping[str, Any], player: str, opponent: str
-) -> str | None:
-    """Map the backed player from authenticated ``marketSides`` metadata."""
-    structured_sides = _structured_market_sides(market)
-    mapped = _mapped_side_indexes(structured_sides, player, opponent)
-    if mapped is None:
+) -> tuple[int, int, list[dict[str, Any]]] | None:
+    sides = _structured_market_sides(market)
+    if len(sides) < 2:
         return None
-    player_index, _opponent_index = mapped
-    side_by_index = {
-        index: is_long for index, is_long, _names in structured_sides
-    }
-    return LONG_SIDE if side_by_index[player_index] else SHORT_SIDE
+    player_index = _unique_best_side(player, sides)
+    opponent_index = _unique_best_side(opponent, sides)
+    if player_index is None or opponent_index is None or player_index == opponent_index:
+        return None
+    if sides[player_index]["long"] == sides[opponent_index]["long"]:
+        return None
+    return player_index, opponent_index, sides
 
 
 def _surname_matches(name: str, haystack: str) -> bool:
-    normalized = _normalize(name)
-    surname = normalized.split()[-1] if normalized else ""
-    return len(surname) >= 3 and surname in set(haystack.split())
+    tokens = _normalize(name).split()
+    if len(tokens) < 2:
+        return False
+    haystack_tokens = set(_normalize(haystack).split())
+    surname_tokens = tokens[1:]
+    return bool(surname_tokens) and all(
+        len(token) >= 3 and token in haystack_tokens for token in surname_tokens
+    )

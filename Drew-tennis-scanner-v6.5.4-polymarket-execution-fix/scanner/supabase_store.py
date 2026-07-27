@@ -74,7 +74,7 @@ class SupabaseStore:
                 "Authorization": f"Bearer {self.key}",
                 "Accept-Profile": self.schema,
                 "Content-Profile": self.schema,
-                "User-Agent": "DrewTennisScanner/6.5.3-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.4-Railway",
             }
         )
         return session
@@ -233,7 +233,7 @@ class SupabaseStore:
             "scanned_at": record.get("scanned_at"),
             "cycle_id": record.get("cycle_id"),
             "worker_id": str(record.get("worker_id") or "unknown"),
-            "worker_version": str(record.get("worker_version") or "6.5.3"),
+            "worker_version": str(record.get("worker_version") or "6.5.4"),
             "event_key": str(record.get("event_key") or "unknown"),
             "player": str(record.get("player") or "Unknown"),
             "opponent": str(record.get("opponent") or "Unknown"),

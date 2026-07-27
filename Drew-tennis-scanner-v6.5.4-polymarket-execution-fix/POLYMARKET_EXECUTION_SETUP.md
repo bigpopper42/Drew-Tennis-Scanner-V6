@@ -1,6 +1,6 @@
 # Polymarket US Live Execution Setup
 
-Version 6.5.3 sends each new approved scanner signal to both Discord and the
+Version 6.5.4 sends each new approved scanner signal to both Discord and the
 guarded Polymarket US execution engine. The engine does not make tennis
 decisions and does not use the scanner's displayed price.
 
@@ -65,7 +65,7 @@ The first Discord message continues to show the scanner's 3%, 5%, or 7% scoring
 tier. The second execution message shows the actual live stake, which is fixed
 at 10% of the authenticated account balance.
 
-Version 6.5.3 automates entry and holds filled contracts for normal market
+Version 6.5.4 automates entry and holds filled contracts for normal market
 resolution. It does not automatically sell a filled position early.
 
 ## Emergency stop

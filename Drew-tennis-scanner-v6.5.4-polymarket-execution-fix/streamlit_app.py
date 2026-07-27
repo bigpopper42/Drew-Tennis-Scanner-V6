@@ -25,7 +25,7 @@ from scanner.polymarket import (
     search_us_markets,
 )
 
-VERSION = "6.5.3"
+VERSION = "6.1"
 st.set_page_config(page_title=f"Tennis Scanner V{VERSION}", page_icon="🎾", layout="wide")
 init_db()
 
@@ -387,7 +387,7 @@ for key, value in {
 
 st.title("🎾 Tennis Scanner Assistant")
 st.caption(
-    "Version 6.5.3: live tennis scanning, Discord alerts, Railway/Supabase monitoring, and guarded Polymarket US execution when enabled in Railway."
+    "Version 6.5.4: live tennis scanning, Discord alerts, Railway/Supabase monitoring, and guarded Polymarket US execution with authenticated live-market side and order-book validation."
 )
 
 page = st.selectbox(
