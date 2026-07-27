@@ -1,4 +1,4 @@
-# Railway Worker Setup — Version 6.5
+# Railway Worker Setup — Version 6.5.3
 
 This worker scans live tennis, stores shadow diagnostics, sends Discord alerts,
 and can place guarded Polymarket US orders when live execution is explicitly

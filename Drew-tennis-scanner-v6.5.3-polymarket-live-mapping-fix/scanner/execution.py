@@ -126,8 +126,6 @@ class PolymarketExecutionEngine:
             return reject("Scanner record is not eligible for a new trade alert.")
         if not record.get("market_found") or not market_slug:
             return reject("Polymarket US market was not safely matched.")
-        if market_side not in {LONG_SIDE, SHORT_SIDE}:
-            return reject("Backed player could not be mapped safely to YES or NO.")
         try:
             confidence = float(record.get("market_match_confidence") or 0.0)
         except (TypeError, ValueError):
@@ -152,6 +150,18 @@ class PolymarketExecutionEngine:
                 return reject("Polymarket US did not return the matched market.")
             if market.get("active") is not True or market.get("closed") is True:
                 return reject("Polymarket market is not active and tradable.")
+
+            # The authenticated market is authoritative. Public discovery may
+            # not include enough side metadata, so resolve the backed player
+            # again from live marketSides before deciding whether to reject.
+            live_market_side = _live_market_side(market, player, opponent)
+            if live_market_side in {LONG_SIDE, SHORT_SIDE}:
+                market_side = live_market_side
+            elif market_side not in {LONG_SIDE, SHORT_SIDE}:
+                return reject(
+                    "Backed player could not be mapped safely to YES or NO."
+                )
+
             if not self._market_names_match(market, player, opponent):
                 return reject("Live market names do not match the scanner signal.")
 
@@ -275,6 +285,10 @@ class PolymarketExecutionEngine:
     def _market_names_match(
         market: Mapping[str, Any], player: str, opponent: str
     ) -> bool:
+        structured_sides = _structured_market_sides(market)
+        if len(structured_sides) >= 2:
+            return _mapped_side_indexes(structured_sides, player, opponent) is not None
+
         haystack = _normalize(
             " ".join(
                 [
@@ -409,6 +423,108 @@ def _normalize(value: str) -> str:
         .decode()
     )
     return " ".join(re.sub(r"[^a-zA-Z0-9 ]+", " ", ascii_text).lower().split())
+
+
+def _team_names(side: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return every usable competitor label from a live market side."""
+    team = side.get("team")
+    if not isinstance(team, Mapping):
+        return ()
+    names: list[str] = []
+    seen: set[str] = set()
+    for field in ("name", "displayName", "safeName", "alias", "abbreviation"):
+        value = str(team.get(field) or "").strip()
+        normalized = _normalize(value)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            names.append(value)
+    return tuple(names)
+
+
+def _structured_market_sides(
+    market: Mapping[str, Any],
+) -> list[tuple[int, bool, tuple[str, ...]]]:
+    sides = market.get("marketSides")
+    if not isinstance(sides, list):
+        return []
+    structured: list[tuple[int, bool, tuple[str, ...]]] = []
+    for index, side in enumerate(sides):
+        if not isinstance(side, Mapping) or not isinstance(side.get("long"), bool):
+            continue
+        names = _team_names(side)
+        if names:
+            structured.append((index, bool(side["long"]), names))
+    return structured
+
+
+def _competitor_name_matches(expected: str, candidate: str) -> bool:
+    """Conservatively match exact names or first-name/initial variants."""
+    expected_name = _normalize(expected)
+    candidate_name = _normalize(candidate)
+    if not expected_name or not candidate_name:
+        return False
+    if expected_name == candidate_name:
+        return True
+
+    expected_tokens = expected_name.split()
+    candidate_tokens = candidate_name.split()
+    if len(expected_tokens) < 2 or len(candidate_tokens) < 2:
+        return False
+    if expected_tokens[-1] != candidate_tokens[-1]:
+        return False
+
+    expected_first = expected_tokens[0]
+    candidate_first = candidate_tokens[0]
+    if expected_first == candidate_first:
+        return True
+    if len(expected_first) == 1:
+        return candidate_first.startswith(expected_first)
+    if len(candidate_first) == 1:
+        return expected_first.startswith(candidate_first)
+    return False
+
+
+def _mapped_side_indexes(
+    sides: list[tuple[int, bool, tuple[str, ...]]],
+    player: str,
+    opponent: str,
+) -> tuple[int, int] | None:
+    player_indexes = {
+        index
+        for index, _is_long, names in sides
+        if any(_competitor_name_matches(player, name) for name in names)
+    }
+    opponent_indexes = {
+        index
+        for index, _is_long, names in sides
+        if any(_competitor_name_matches(opponent, name) for name in names)
+    }
+    if len(player_indexes) != 1 or len(opponent_indexes) != 1:
+        return None
+    player_index = next(iter(player_indexes))
+    opponent_index = next(iter(opponent_indexes))
+    if player_index == opponent_index:
+        return None
+
+    side_by_index = {index: is_long for index, is_long, _names in sides}
+    if side_by_index[player_index] == side_by_index[opponent_index]:
+        return None
+    return player_index, opponent_index
+
+
+def _live_market_side(
+    market: Mapping[str, Any], player: str, opponent: str
+) -> str | None:
+    """Map the backed player from authenticated ``marketSides`` metadata."""
+    structured_sides = _structured_market_sides(market)
+    mapped = _mapped_side_indexes(structured_sides, player, opponent)
+    if mapped is None:
+        return None
+    player_index, _opponent_index = mapped
+    side_by_index = {
+        index: is_long for index, is_long, _names in structured_sides
+    }
+    return LONG_SIDE if side_by_index[player_index] else SHORT_SIDE
 
 
 def _surname_matches(name: str, haystack: str) -> bool:

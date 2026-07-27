@@ -1,13 +1,13 @@
-# Drew Tennis Scanner Version 6.5.2
+# Drew Tennis Scanner Version 6.5.3
 
-Version 6.5.2 keeps Drew's locked late-match decision tree unchanged and fixes Polymarket US market/player mapping for the current `teams` and `marketSides` API fields. The scanner still treats Polymarket pricing as informational when deciding whether to trade. Once approved, the separate execution engine checks the live market and places one 10%-of-bankroll order when every safeguard passes.
+Version 6.5.3 keeps Drew's locked late-match decision tree unchanged and makes the authenticated Polymarket US `marketSides[].team` and `marketSides[].long` response authoritative for execution-side mapping. Public discovery may leave the side unresolved; execution now retrieves the live market, maps both competitors to different sides, and uses the backed player's live `long` value. Ambiguous names still reject. Once approved, the separate execution engine checks the live market and places one 10%-of-bankroll order when every safeguard passes.
 
 ## Polymarket US execution
 
 Live execution uses Polymarket's official Python SDK and authenticated API. It:
 
 - receives the same structured `TRADE` record used for Discord;
-- independently verifies the market, player side, order-book state, and live price;
+- independently verifies the market, authenticated player side, order-book state, and live price;
 - refuses a second order while any order or position is open;
 - sizes from the authenticated account balance at 10%;
 - previews the exact request before submitting it;

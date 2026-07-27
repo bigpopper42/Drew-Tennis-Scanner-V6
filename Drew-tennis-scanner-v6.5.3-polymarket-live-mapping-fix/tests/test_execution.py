@@ -8,6 +8,7 @@ from scanner.execution import (
     LONG_SIDE,
     SHORT_SIDE,
     PolymarketExecutionEngine,
+    _live_market_side,
 )
 from scanner.worker_runtime import CycleReport, RailwayShadowWorker, WorkerConfig
 
@@ -46,16 +47,20 @@ class FakeMarkets:
         state: str = "MARKET_STATE_OPEN",
         bid: float = 0.32,
         ask: float = 0.68,
+        title: str = "Alex Hernandez vs Nicolas Mejia",
+        market_sides: list[dict[str, Any]] | None = None,
     ) -> None:
         self.market = {
             "market": {
                 "slug": "aec-atp-hernandez-mejia-2026-07-25",
-                "title": "Alex Hernandez vs Nicolas Mejia",
+                "title": title,
                 "description": "Who will win?",
                 "active": active,
                 "closed": closed,
             }
         }
+        if market_sides is not None:
+            self.market["market"]["marketSides"] = market_sides
         self.book_payload = {
             "marketSlug": "aec-atp-hernandez-mejia-2026-07-25",
             "state": state,
@@ -191,6 +196,111 @@ def test_short_side_uses_inverse_player_price_and_short_intent() -> None:
     request = client.orders.create_calls[0]
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
     assert request["slippageTolerance"]["currentPrice"]["value"] == "0.32"
+
+
+def test_missing_discovery_side_uses_authenticated_live_mapping() -> None:
+    market_sides = [
+        {"team": {"name": "Alex Hernandez"}, "long": True},
+        {"team": {"name": "Nicolas Mejia"}, "long": False},
+    ]
+    client = FakeClient(
+        markets=FakeMarkets(title="Men's tennis match", market_sides=market_sides)
+    )
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(record(side=""))
+
+    assert result.status == "EXECUTED"
+    assert result.market_side == LONG_SIDE
+    assert client.orders.create_calls[0]["intent"] == "ORDER_INTENT_BUY_LONG"
+
+
+def test_generic_title_validates_from_live_monteiro_mazza_sides() -> None:
+    market = {
+        "title": "Men's tennis match winner",
+        "slug": "generic-tennis-market",
+        "description": "Live event",
+        "marketSides": [
+            {
+                "team": {
+                    "name": "Thiago Monteiro",
+                    "displayName": "T. Monteiro",
+                },
+                "long": False,
+            },
+            {
+                "team": {
+                    "name": "Matteo Mazza",
+                    "abbreviation": "M. Mazza",
+                },
+                "long": True,
+            },
+        ],
+    }
+
+    assert PolymarketExecutionEngine._market_names_match(
+        market, "T. Monteiro", "M. Mazza"
+    )
+    assert _live_market_side(market, "Thiago Monteiro", "Matteo Mazza") == SHORT_SIDE
+    assert _live_market_side(market, "Matteo Mazza", "Thiago Monteiro") == LONG_SIDE
+
+
+def test_full_first_names_and_initials_match_when_surnames_agree() -> None:
+    market = {
+        "marketSides": [
+            {"team": {"name": "Thiago Monteiro"}, "long": True},
+            {"team": {"displayName": "M. Mazza"}, "long": False},
+        ]
+    }
+
+    assert _live_market_side(market, "T. Monteiro", "Matteo Mazza") == LONG_SIDE
+    assert _live_market_side(market, "Matteo Mazza", "Thiago Monteiro") == SHORT_SIDE
+
+
+def test_two_competitors_cannot_map_to_the_same_side() -> None:
+    market = {
+        "marketSides": [
+            {
+                "team": {
+                    "name": "Alex Smith",
+                    "alias": "Andrew Smith",
+                },
+                "long": True,
+            },
+            {"team": {"name": "Nicolas Mejia"}, "long": False},
+        ]
+    }
+
+    assert _live_market_side(market, "Alex Smith", "Andrew Smith") is None
+
+
+def test_ambiguous_initial_and_surname_names_are_rejected() -> None:
+    market = {
+        "marketSides": [
+            {"team": {"name": "Alex Smith"}, "long": True},
+            {"team": {"name": "Andrew Smith"}, "long": False},
+        ]
+    }
+
+    assert _live_market_side(market, "A. Smith", "Andrew Smith") is None
+    assert not PolymarketExecutionEngine._market_names_match(
+        market, "A. Smith", "Andrew Smith"
+    )
+
+
+def test_live_side_overrides_conflicting_discovery_side() -> None:
+    market_sides = [
+        {"team": {"name": "Alex Hernandez"}, "long": False},
+        {"team": {"name": "Nicolas Mejia"}, "long": True},
+    ]
+    client = FakeClient(markets=FakeMarkets(market_sides=market_sides))
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(record(side=LONG_SIDE))
+
+    assert result.status == "EXECUTED"
+    assert result.market_side == SHORT_SIDE
+    assert client.orders.create_calls[0]["intent"] == "ORDER_INTENT_BUY_SHORT"
 
 
 def test_open_position_blocks_new_order() -> None:

@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.2-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.3-Railway",
             }
         )
         return session
@@ -136,9 +136,6 @@ class DiscordNotifier:
         tournament = str(record.get("tournament") or "Unknown tournament")
         league = str(record.get("league") or "ATP")
         stability = self._number(record.get("stability_score"), 2)
-        stake_pct = self._number(record.get("stake_pct"), 0)
-        stake_amount = self._money(record.get("stake_amount"))
-        bankroll = self._money(record.get("bankroll"))
         break_lead = self._integer(record.get("break_lead"))
         serving = self._yes_no(record.get("serving"))
         serving_for_match = self._yes_no(record.get("serving_for_match"))
@@ -158,7 +155,7 @@ class DiscordNotifier:
             f"✅ Break lead: {break_lead} · Serving: {serving}\n"
             f"🏁 Serving for match: {serving_for_match}\n"
             f"💪 Service points won: {service_pct}\n"
-            f"💰 Scanner tier: **{stake_pct}%** ({stake_amount} of {bankroll})\n"
+            "💰 Live order size: **10% of authenticated balance**\n"
             f"🔎 {market}\n"
             f"🕒 {time_label}"
         )

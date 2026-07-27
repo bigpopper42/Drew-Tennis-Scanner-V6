@@ -1,4 +1,4 @@
-# Deploy Version 6.5.2 Polymarket US Execution
+# Deploy Version 6.5.3 Polymarket US Execution
 
 This archive is flat-rooted. The GitHub repository homepage must show `worker.py`, `requirements.txt`, `railway.toml`, `scanner/`, and `sql/` directly at the top level.
 
@@ -17,7 +17,7 @@ POLYMARKET_EXECUTION_ENABLED=true
 6. Keep every existing Railway variable, including the API Tennis, Supabase,
    Discord, and `SAVE_ALL_SCANS` values.
 7. Deploy the staged Railway changes.
-8. Confirm Railway logs show `version: 6.5.2`.
+8. Confirm Railway logs show `version: 6.5.3`.
 9. Confirm Discord reports `Polymarket execution: LIVE`.
 
-No Supabase migration is required for Version 6.5.2.
+No Supabase migration is required for Version 6.5.3.

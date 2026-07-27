@@ -55,7 +55,7 @@ def _session() -> requests.Session:
         raise_on_status=False,
     )
     session.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8))
-    session.headers.update({"Accept": "application/json", "User-Agent": "DrewTennisScanner/6.1"})
+    session.headers.update({"Accept": "application/json", "User-Agent": "DrewTennisScanner/6.5.3"})
     return session
 
 

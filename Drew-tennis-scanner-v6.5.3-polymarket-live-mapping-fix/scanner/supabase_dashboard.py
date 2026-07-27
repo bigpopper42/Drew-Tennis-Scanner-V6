@@ -79,7 +79,7 @@ class SupabaseDashboardClient:
                 "apikey": self.key,
                 "Authorization": f"Bearer {self.key}",
                 "Accept-Profile": self.schema,
-                "User-Agent": "DrewTennisScanner/6.1-Dashboard",
+                "User-Agent": "DrewTennisScanner/6.5.3-Dashboard",
             }
         )
         return session

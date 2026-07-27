@@ -1,6 +1,6 @@
-# Railway Handoff — Version 6.5
+# Railway Handoff — Version 6.5.3
 
-Version 6.5 adds guarded Polymarket US execution without changing the scanner's
+Version 6.5.3 adds guarded Polymarket US execution without changing the scanner's
 decision tree. See `POLYMARKET_EXECUTION_SETUP.md` before enabling it.
 
 Required new service variables:
@@ -16,7 +16,7 @@ Expected startup log events:
 
 ```text
 worker_ready
-version: 6.5
+version: 6.5.3
 discord_startup_alert_sent
 ```
 
