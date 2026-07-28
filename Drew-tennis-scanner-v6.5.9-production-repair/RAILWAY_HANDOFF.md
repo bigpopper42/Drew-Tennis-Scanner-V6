@@ -1,6 +1,6 @@
-# Railway Handoff — Version 6.5.8
+# Railway Handoff — Version 6.5.9
 
-V6.5.8 fixes the market-matching regressions without weakening the authenticated execution safeguards:
+V6.5.9 fixes the market-matching regressions without weakening the authenticated execution safeguards:
 
 - public ATP Challenger candidates may proceed provisionally when type or named-side fields are omitted;
 - exact-score and other non-moneyline signatures remain blocked;

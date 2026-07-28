@@ -74,6 +74,34 @@ class PerspectiveTests(unittest.TestCase):
         self.assertTrue(all(result.decision.score >= 0 for result in results))
         self.assertTrue(all(result.mapping.data_completeness_pct < 100 for result in results))
 
+
+    def test_duplicate_point_rows_cannot_create_impossible_two_break_lead_at_one_zero(self):
+        duplicate_break_game = {
+            "set_number": "Set 2",
+            "player_served": "Second Player",
+            "serve_winner": "First Player",
+            "points": [],
+        }
+        event = {
+            "event_key": "clamp-breaks",
+            "event_first_player": "A. Alpha",
+            "event_second_player": "B. Beta",
+            "first_player_key": 1,
+            "second_player_key": 2,
+            "event_type_type": "Atp Singles",
+            "tournament_name": "ATP Test",
+            "event_status": "Set 2",
+            "event_final_result": "1 - 0",
+            "event_game_result": "0 - 15",
+            "event_serve": "Second Player",
+            "scores": [{"score_set": "2", "score_first": "1", "score_second": "0"}],
+            "statistics": [],
+            "pointbypoint": [duplicate_break_game, dict(duplicate_break_game)],
+        }
+        mapping = build_live_scanner_mapping(event, "A. Alpha", rankings={})
+        self.assertEqual(mapping.updates["scan_break_lead"], 1)
+        self.assertIn("clamped", " ".join(mapping.warnings).lower())
+
     def test_mapping_uses_real_statistics_from_sample(self):
         events = json.loads(FIXTURE.read_text())
         event = next(row for row in events if row.get("event_key") == 12147766)

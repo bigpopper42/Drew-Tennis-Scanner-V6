@@ -54,6 +54,8 @@ class FakeMarkets:
         market_sides: list[dict[str, Any]] | None = None,
         nested_book: bool = True,
         wrapped_market: bool = True,
+        minimum_trade_qty: float | None = None,
+        tick_size: float | None = None,
     ) -> None:
         sides = market_sides
         if sides is None:
@@ -72,6 +74,10 @@ class FakeMarkets:
         }
         if sports_market_type_v2 is not None:
             market["sportsMarketTypeV2"] = sports_market_type_v2
+        if minimum_trade_qty is not None:
+            market["minimumTradeQty"] = str(minimum_trade_qty)
+        if tick_size is not None:
+            market["orderPriceMinTickSize"] = str(tick_size)
         self.market_payload = {"market": market} if wrapped_market else market
         market_data: dict[str, Any] = {
             "marketSlug": slug,
@@ -182,6 +188,16 @@ class FakeOrders:
         return self.last_created
 
 
+class FakeSearch:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+        self.calls: list[dict[str, Any]] = []
+
+    def query(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(params)
+        return self.payload
+
+
 class FakeClient:
     def __init__(
         self,
@@ -190,11 +206,14 @@ class FakeClient:
         portfolio: FakePortfolio | None = None,
         markets: FakeMarkets | None = None,
         orders: FakeOrders | None = None,
+        search: FakeSearch | None = None,
     ) -> None:
         self.account = account or FakeAccount()
         self.portfolio = portfolio or FakePortfolio()
         self.markets = markets or FakeMarkets()
         self.orders = orders or FakeOrders()
+        if search is not None:
+            self.search = search
         self.closed = False
 
     def close(self) -> None:
@@ -574,7 +593,7 @@ def test_live_market_overwrites_wrong_discovery_side_with_short_side() -> None:
     assert result.player_price_cents == 68.0
     request = client.orders.create_calls[0]
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
-    assert request["slippageTolerance"]["currentPrice"]["value"] == "0.32"
+    assert request["slippageTolerance"]["currentPrice"]["value"] == "0.68"
 
 
 def test_initials_and_full_names_map_safely_when_surnames_agree() -> None:
@@ -988,3 +1007,82 @@ def test_worker_forwards_each_trade_signal_to_executor_once() -> None:
     assert len(fake.calls) == 1
     assert report.execution_attempts == 1
     assert report.execution_orders == 1
+
+
+def test_sdk_search_recovers_market_even_with_zero_public_confidence(monkeypatch) -> None:
+    slug = "aec-atp-mannari-tien-2026-07-28"
+    markets = FakeMarkets(
+        slug=slug,
+        title="Adrian Mannarino vs Learner Tien",
+        market_sides=[
+            {"long": True, "team": {"name": "Adrian Mannarino"}},
+            {"long": False, "team": {"name": "Learner Tien"}},
+        ],
+    )
+    search = FakeSearch({"events": [{"markets": [{"slug": slug, "title": markets.market_payload["market"]["title"]}]}]})
+    client = FakeClient(markets=markets, search=search)
+    monkeypatch.setattr("scanner.execution.match_tennis_market", lambda *args, **kwargs: [])
+    payload = record(player="A. Mannarino", opponent="L. Tien", slug="")
+    payload["market_found"] = False
+    payload["market_match_confidence"] = 0.0
+    payload["market_public_moneyline_confirmed"] = False
+
+    result = PolymarketExecutionEngine(config(), client=client).execute_trade(payload)
+
+    assert result.status == "EXECUTED"
+    assert result.market_slug == slug
+    assert search.calls
+
+
+def test_authenticated_slug_is_not_discarded_for_low_public_confidence() -> None:
+    payload = record()
+    payload["market_match_confidence"] = 1.0
+    result = PolymarketExecutionEngine(config(), client=FakeClient()).execute_trade(payload)
+    assert result.status == "EXECUTED"
+
+
+def test_market_minimum_contract_quantity_is_enforced() -> None:
+    markets = FakeMarkets(minimum_trade_qty=10.0)
+    result = PolymarketExecutionEngine(config(), client=FakeClient(markets=markets)).execute_trade(record())
+    assert result.status == "REJECTED"
+    assert "minimum contract quantity" in result.reason
+
+
+def test_tick_size_rounds_slippage_reference_price() -> None:
+    markets = FakeMarkets(ask=0.685, tick_size=0.005)
+    client = FakeClient(markets=markets)
+    result = PolymarketExecutionEngine(config(), client=client).execute_trade(record())
+    assert result.status == "EXECUTED"
+    request = client.orders.create_calls[0]
+    assert request["slippageTolerance"]["currentPrice"]["value"] == "0.685"
+
+
+class RetryableExecutionEngine(FakeExecutionEngine):
+    def execute_trade(self, payload: dict[str, Any]) -> ExecutionResult:
+        self.calls.append(payload)
+        return ExecutionResult(
+            status="REJECTED",
+            reason="Market discovery returned no candidate slugs.",
+            signal_key=str(payload["trade_key"]),
+            player=str(payload["player"]),
+            opponent=str(payload["opponent"]),
+            retryable=True,
+            diagnostic_stage="discovery",
+        )
+
+
+def test_worker_does_not_permanently_process_retryable_failure() -> None:
+    worker = RailwayShadowWorker(
+        WorkerConfig(api_tennis_key="test", supabase_url="", supabase_key="", dry_run=True, worker_id="test-worker")
+    )
+    fake = RetryableExecutionEngine()
+    worker.execution_engine = fake
+    report = CycleReport(cycle_id="cycle", started_at="2026-07-28T00:00:00Z")
+    payload = record()
+    key = fake.signal_key(payload)
+
+    worker._queue_execution_signals([payload])
+    worker._flush_execution_signals(report)
+
+    assert key not in worker.processed_execution_signals
+    assert key in worker.execution_retry_after

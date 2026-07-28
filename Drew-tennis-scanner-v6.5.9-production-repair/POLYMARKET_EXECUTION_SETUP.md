@@ -1,6 +1,6 @@
 # Polymarket US Live Execution Setup
 
-Version 6.5.8 sends each new approved scanner signal to Discord and the guarded Polymarket US execution engine. The scanner remains the only tennis decision maker.
+Version 6.5.9 sends each new approved scanner signal to Discord and the guarded Polymarket US execution engine. The scanner remains the only tennis decision maker.
 
 ## Locked live behavior
 
@@ -65,7 +65,7 @@ EXECUTION_SLIPPAGE_TICKS=1
 EXECUTION_MIN_MARKET_CONFIDENCE=80
 ```
 
-Legacy `EXECUTION_BANKROLL_PCT` and `EXECUTION_MAX_ORDER_USD` variables may remain in Railway. Version 6.5.8 ignores them.
+Legacy `EXECUTION_BANKROLL_PCT` and `EXECUTION_MAX_ORDER_USD` variables may remain in Railway. Version 6.5.9 ignores them.
 
 ## Discord execution meanings
 

@@ -590,6 +590,19 @@ def build_live_scanner_mapping(
 
     break_lead = _current_break_lead_from_points(event, side, set_number, tiebreak)
     break_source = "Calculated from point-by-point"
+    if break_lead is not None and score_found:
+        # Duplicate/cumulative API Tennis point-by-point rows can otherwise
+        # fabricate multiple breaks. A net break lead cannot exceed the maximum
+        # implied by the current game-score difference (1-0 => at most one,
+        # 3-0 => at most two, etc.).
+        score_difference = max(0, backed_games - opponent_games)
+        score_implied_max = math.ceil(score_difference / 2.0)
+        if break_lead > score_implied_max:
+            warnings.append(
+                "Point-by-point break count exceeded the current set score and was clamped."
+            )
+            break_lead = score_implied_max
+            break_source = "Point-by-point reconciled to set score"
     if break_lead is None:
         break_lead, break_source = _current_break_lead_fallback(event, side, set_number, tiebreak)
         warnings.append(

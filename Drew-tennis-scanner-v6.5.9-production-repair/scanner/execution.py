@@ -33,6 +33,7 @@ class ExecutionClient(Protocol):
     markets: Any
     orders: Any
     portfolio: Any
+    search: Any
 
     def close(self) -> None: ...
 
@@ -69,6 +70,8 @@ class ExecutionResult:
     order_state: str = ""
     filled_quantity: float = 0.0
     recommendation_change: str = ""
+    retryable: bool = False
+    diagnostic_stage: str = ""
 
     @property
     def order_created(self) -> bool:
@@ -94,6 +97,8 @@ class ExecutionResult:
             "order_state": self.order_state,
             "filled_quantity": self.filled_quantity,
             "recommendation_change": self.recommendation_change,
+            "retryable": self.retryable,
+            "diagnostic_stage": self.diagnostic_stage,
         }
 
 
@@ -133,8 +138,10 @@ class PolymarketExecutionEngine:
         authenticated_market_question = ""
         authenticated_market_type = ""
         recommendation_change = str(record.get("recommendation_change") or "").strip().upper()
+        diagnostic_stage = "precheck"
+        order_submission_started = False
 
-        def reject(reason: str, **fields: Any) -> ExecutionResult:
+        def reject(reason: str, *, retryable: bool = False, stage: str = "", **fields: Any) -> ExecutionResult:
             result_fields: dict[str, Any] = {
                 "status": "REJECTED",
                 "reason": reason,
@@ -147,6 +154,8 @@ class PolymarketExecutionEngine:
                 "market_type": authenticated_market_type,
                 "bankroll_pct": self.config.bankroll_pct,
                 "recommendation_change": recommendation_change,
+                "retryable": retryable,
+                "diagnostic_stage": stage or diagnostic_stage,
             }
             result_fields.update(fields)
             return ExecutionResult(**result_fields)
@@ -178,8 +187,9 @@ class PolymarketExecutionEngine:
                     candidate_confidence = float(score or 0.0)
                 except (TypeError, ValueError):
                     candidate_confidence = 0.0
-                if candidate_confidence < self.config.minimum_market_confidence:
-                    return
+                # Public-search confidence is ranking information only. It is
+                # never a safety gate; the authenticated market payload below
+                # decides whether a candidate is the correct two-player moneyline.
                 seen_slugs.add(candidate_slug)
                 candidate_rows.append(
                     {
@@ -190,6 +200,17 @@ class PolymarketExecutionEngine:
                 )
 
             add_candidate(market_slug, confidence, market_side)
+
+            diagnostic_stage = "sdk_discovery"
+            discovery_errors: list[str] = []
+            for candidate in self._sdk_market_candidates(player, opponent):
+                add_candidate(
+                    candidate.get("market_slug"),
+                    candidate.get("api_match_confidence", 100.0),
+                    candidate.get("market_side", ""),
+                )
+            if not candidate_rows:
+                discovery_errors.append("official SDK search returned no candidate slugs")
 
             # Always refresh when the worker missed or only had a provisional
             # public candidate. A strict public moneyline can use its known slug
@@ -210,7 +231,8 @@ class PolymarketExecutionEngine:
                         event_start=str(record.get("event_time") or ""),
                         include_sport_fallback=True,
                     )
-                except Exception:
+                except Exception as exc:
+                    discovery_errors.append(f"public fallback failed: {exc}")
                     fallback_candidates = []
                 for row in fallback_candidates:
                     add_candidate(
@@ -220,8 +242,14 @@ class PolymarketExecutionEngine:
                     )
 
             if not candidate_rows:
-                return reject("Polymarket US market was not safely matched.")
+                detail = "; ".join(discovery_errors) or "no candidate slugs were returned"
+                return reject(
+                    f"Market discovery returned no candidate slugs ({detail}).",
+                    retryable=True,
+                    stage="discovery",
+                )
 
+            diagnostic_stage = "authenticated_market_validation"
             market: dict[str, Any] = {}
             single_candidate_failure = ""
             for candidate in candidate_rows:
@@ -288,7 +316,11 @@ class PolymarketExecutionEngine:
                             "Live market names do not match the scanner signal."
                         )
                 return reject(
-                    "No authenticated Polymarket match-winner market matched both players."
+                    "No authenticated Polymarket match-winner market matched both players "
+                    f"(last validation result: {single_candidate_failure or 'unknown'}; "
+                    f"candidates checked: {len(candidate_rows)}).",
+                    retryable=single_candidate_failure.startswith("retrieve_failed"),
+                    stage="authenticated_market_validation",
                 )
 
             # Multiple unrelated markets are always allowed. A same-market
@@ -321,6 +353,10 @@ class PolymarketExecutionEngine:
                 return reject("Backed player could not be mapped safely to YES or NO.")
             market_side = live_market_side
 
+            minimum_trade_qty = self._minimum_trade_qty(market)
+            tick_size = self._tick_size(market)
+
+            diagnostic_stage = "order_book"
             raw_book = self.client.markets.book(market_slug) or {}
             book = _market_data(raw_book)
             if not book:
@@ -349,6 +385,16 @@ class PolymarketExecutionEngine:
                 self.client.account.balances()
             )
             stake_amount = self._stake_amount(account_balance, buying_power)
+            estimated_contracts = stake_amount / max(player_price, 1e-9)
+            if minimum_trade_qty is not None and estimated_contracts + 1e-9 < minimum_trade_qty:
+                return reject(
+                    "Calculated order is below this market's minimum contract quantity.",
+                    account_balance=account_balance,
+                    buying_power=buying_power,
+                    stake_amount=stake_amount,
+                    player_price_cents=player_price_cents,
+                    stage="order_sizing",
+                )
             if stake_amount < self.config.minimum_order_usd:
                 return reject(
                     f"Calculated {self.config.bankroll_pct:g}% stake is below the minimum live order.",
@@ -357,6 +403,8 @@ class PolymarketExecutionEngine:
                     stake_amount=stake_amount,
                     player_price_cents=player_price_cents,
                 )
+            diagnostic_stage = "order_preview"
+            reference_price = self._round_to_tick(player_price, tick_size)
             order_request = {
                 "marketSlug": market_slug,
                 "intent": (
@@ -375,7 +423,7 @@ class PolymarketExecutionEngine:
                 "maxBlockTime": "5",
                 "slippageTolerance": {
                     "currentPrice": {
-                        "value": self._price_string(long_reference),
+                        "value": self._price_string(reference_price),
                         "currency": "USD",
                     },
                     "ticks": self.config.slippage_ticks,
@@ -385,8 +433,12 @@ class PolymarketExecutionEngine:
             # Preview validates the exact request without moving money. The
             # released SDK has used both direct and wrapped preview payloads,
             # so the helper preserves compatibility without weakening checks.
-            self._preview_order(order_request)
+            preview = self._preview_order(order_request)
+            self._validate_preview(preview)
+            diagnostic_stage = "order_submission"
+            order_submission_started = True
             response = self.client.orders.create(order_request) or {}
+            order_submission_started = False
         except Exception as exc:
             return ExecutionResult(
                 status="FAILED",
@@ -400,6 +452,8 @@ class PolymarketExecutionEngine:
                 market_type=authenticated_market_type,
                 bankroll_pct=self.config.bankroll_pct,
                 recommendation_change=recommendation_change,
+                retryable=not order_submission_started,
+                diagnostic_stage=diagnostic_stage,
             )
 
         order_id = self._order_id(response)
@@ -433,7 +487,91 @@ class PolymarketExecutionEngine:
             order_state=order_state,
             filled_quantity=filled_quantity,
             recommendation_change=recommendation_change,
+            retryable=False,
+            diagnostic_stage="order_verification",
         )
+
+    def _sdk_market_candidates(self, player: str, opponent: str) -> list[dict[str, Any]]:
+        """Use the official SDK search endpoint before legacy HTTP discovery.
+
+        Search responses contain events with nested markets. We collect slugs
+        broadly, then require authenticated retrieval, active/open state,
+        moneyline type, and exact two-player side assignment before execution.
+        """
+        search_api = getattr(self.client, "search", None)
+        query_method = getattr(search_api, "query", None)
+        if not callable(query_method):
+            return []
+        queries = [
+            f"{player} {opponent}",
+            f"{opponent} {player}",
+            f"{_last_name(player)} {_last_name(opponent)}",
+        ]
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for query in queries:
+            if not query.strip():
+                continue
+            try:
+                payload = query_method({"query": query, "limit": 50}) or {}
+            except TypeError:
+                payload = query_method({"query": query}) or {}
+            except Exception:
+                continue
+            for market in _extract_market_mappings(payload):
+                slug = str(market.get("slug") or market.get("marketSlug") or "").strip()
+                if not slug or slug in seen:
+                    continue
+                seen.add(slug)
+                rows.append({"market_slug": slug, "api_match_confidence": 100.0})
+        return rows
+
+    @staticmethod
+    def _minimum_trade_qty(market: Mapping[str, Any]) -> float | None:
+        for source in (market, market.get("marketData"), market.get("instrument")):
+            if not isinstance(source, Mapping):
+                continue
+            for key in ("minimumTradeQty", "minimum_trade_qty", "minOrderSize"):
+                try:
+                    value = float(source.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    return value
+        return None
+
+    @staticmethod
+    def _tick_size(market: Mapping[str, Any]) -> float:
+        for source in (market, market.get("marketData"), market.get("instrument")):
+            if not isinstance(source, Mapping):
+                continue
+            for key in ("orderPriceMinTickSize", "tickSize", "tick_size"):
+                try:
+                    value = float(source.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if 0 < value < 1:
+                    return value
+        return 0.01
+
+    @staticmethod
+    def _round_to_tick(price: float, tick_size: float) -> float:
+        ticks = round(price / tick_size)
+        return min(0.9999, max(tick_size, ticks * tick_size))
+
+    @staticmethod
+    def _validate_preview(preview: Mapping[str, Any]) -> None:
+        if not preview:
+            raise ValueError("Polymarket returned an empty order preview.")
+        text = " ".join(
+            str(preview.get(key) or "")
+            for key in ("error", "message", "reason", "rejectReason", "orderRejectReason")
+        ).strip()
+        state = str(preview.get("state") or preview.get("status") or "").upper()
+        if text and any(token in text.lower() for token in ("reject", "invalid", "error", "failed")):
+            raise ValueError(f"Polymarket order preview rejected the request: {text}")
+        if "REJECT" in state or "INVALID" in state or "FAIL" in state:
+            raise ValueError(f"Polymarket order preview returned state {state}.")
 
     @staticmethod
     def signal_key(record: Mapping[str, Any]) -> str:
@@ -777,6 +915,37 @@ class PolymarketExecutionEngine:
     @staticmethod
     def _price_string(value: float) -> str:
         return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _last_name(value: str) -> str:
+    tokens = _normalize(value).split()
+    return tokens[-1] if tokens else ""
+
+
+def _extract_market_mappings(payload: Any) -> list[Mapping[str, Any]]:
+    """Recursively collect SDK search market objects without trusting layout."""
+    found: list[Mapping[str, Any]] = []
+    seen_ids: set[int] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            identity = id(value)
+            if identity in seen_ids:
+                return
+            seen_ids.add(identity)
+            if str(value.get("slug") or value.get("marketSlug") or "").strip() and any(
+                key in value
+                for key in ("marketSides", "sportsMarketType", "marketType", "question", "title", "active", "closed")
+            ):
+                found.append(value)
+            for nested in value.values():
+                walk(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                walk(nested)
+
+    walk(payload)
+    return found
 
 
 def _amount_value(value: Any) -> float | None:

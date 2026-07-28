@@ -150,7 +150,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.8 locks live sizing at 20%. Any legacy Railway
+            # Version 6.5.9 locks live sizing at 20%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(
@@ -346,6 +346,8 @@ class RailwayShadowWorker:
         self.sent_discord_alerts: set[str] = set()
         self.pending_execution_signals: Dict[str, Dict[str, Any]] = {}
         self.processed_execution_signals: set[str] = set()
+        self.execution_retry_after: Dict[str, float] = {}
+        self.execution_retry_attempts: Dict[str, int] = {}
         self.discord_notifier: Optional[DiscordNotifier] = None
         self.execution_engine: Optional[PolymarketExecutionEngine] = None
         if config.discord_notifications:
@@ -1022,10 +1024,9 @@ class RailwayShadowWorker:
             ):
                 continue
             signal_key = self.execution_engine.signal_key(record)
-            if (
-                signal_key in self.processed_execution_signals
-                or signal_key in self.pending_execution_signals
-            ):
+            if signal_key in self.processed_execution_signals or signal_key in self.pending_execution_signals:
+                continue
+            if time.monotonic() < self.execution_retry_after.get(signal_key, 0.0):
                 continue
             self.pending_execution_signals[signal_key] = dict(record)
 
@@ -1035,8 +1036,19 @@ class RailwayShadowWorker:
         for signal_key, record in list(self.pending_execution_signals.items()):
             report.execution_attempts += 1
             result = self.execution_engine.execute_trade(record)
-            self.processed_execution_signals.add(signal_key)
             self.pending_execution_signals.pop(signal_key, None)
+
+            if result.retryable:
+                attempts = self.execution_retry_attempts.get(signal_key, 0) + 1
+                self.execution_retry_attempts[signal_key] = attempts
+                # Retry safe pre-submission failures with bounded exponential
+                # backoff. Never automatically retry an ambiguous order submit.
+                delay = min(120.0, 15.0 * (2 ** min(attempts - 1, 3)))
+                self.execution_retry_after[signal_key] = time.monotonic() + delay
+            else:
+                self.processed_execution_signals.add(signal_key)
+                self.execution_retry_after.pop(signal_key, None)
+                self.execution_retry_attempts.pop(signal_key, None)
 
             if result.order_created:
                 report.execution_orders += 1

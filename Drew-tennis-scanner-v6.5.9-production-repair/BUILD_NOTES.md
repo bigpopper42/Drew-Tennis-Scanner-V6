@@ -1,10 +1,10 @@
-# Version 6.5.8 Build Notes
+# Version 6.5.9 Build Notes
 
 ## Fixed: valid markets discarded before authenticated validation
 
 V6.5.7 required the incomplete public search payload to prove that a candidate was the match-winner moneyline. Some ATP Challenger markets expose a valid slug publicly while omitting the sports market type or showing only generic YES/NO sides. Those valid candidates were discarded before the authenticated trading API could inspect them.
 
-V6.5.8 separates discovery from execution safety:
+V6.5.9 separates discovery from execution safety:
 
 - Obvious exact-score, set, game, spread, total, tiebreak, and proposition markets are still rejected during discovery.
 - A public candidate with the correct two-player event identity and no non-moneyline signature can be retained provisionally.

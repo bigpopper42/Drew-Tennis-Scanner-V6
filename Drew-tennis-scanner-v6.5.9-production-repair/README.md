@@ -1,8 +1,8 @@
-# Drew Tennis Scanner Version 6.5.8
+# Drew Tennis Scanner Version 6.5.9
 
-Version 6.5.8 keeps Drew's locked late-match tennis decision tree unchanged and completes the live Polymarket US execution fixes.
+Version 6.5.9 keeps Drew's locked late-match tennis decision tree unchanged and completes the live Polymarket US execution fixes.
 
-## Version 6.5.8 changes
+## Version 6.5.9 changes
 
 - Stops requiring the incomplete public search response to fully prove a moneyline before the authenticated trading API can inspect it.
 - Keeps valid ATP Challenger slugs as provisional candidates when public market-type or named-side fields are omitted.
@@ -30,14 +30,14 @@ Version 6.5.8 keeps Drew's locked late-match tennis decision tree unchanged and 
 
 ## Important sizing note
 
-Version 6.5.8 is locked to 20% in code. Legacy Railway variables named `EXECUTION_BANKROLL_PCT` and `EXECUTION_MAX_ORDER_USD` may remain, but this version does not read either one.
+Version 6.5.9 is locked to 20% in code. Legacy Railway variables named `EXECUTION_BANKROLL_PCT` and `EXECUTION_MAX_ORDER_USD` may remain, but this version does not read either one.
 
 ## Deployment
 
 1. Replace the GitHub repository contents with this archive.
 2. Commit and push.
 3. Redeploy the existing Railway service.
-4. Confirm Discord reports Version `6.5.8` and `Polymarket execution: LIVE`.
+4. Confirm Discord reports Version `6.5.9` and `Polymarket execution: LIVE`.
 5. No Supabase migration is required.
 
 See `POLYMARKET_EXECUTION_SETUP.md` for live execution details and the emergency stop.
