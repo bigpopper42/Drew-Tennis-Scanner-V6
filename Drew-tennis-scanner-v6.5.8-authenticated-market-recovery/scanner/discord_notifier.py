@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.7-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.8-Railway",
             }
         )
         return session
@@ -223,6 +223,11 @@ class DiscordNotifier:
     @staticmethod
     def _market_line(record: Mapping[str, Any]) -> str:
         if not record.get("market_found"):
+            if record.get("execution_market_lookup_retry_enabled"):
+                return (
+                    "Public market lookup missed · execution engine will retry "
+                    "before rejecting"
+                )
             return "Polymarket market not matched"
         try:
             price = float(record.get("market_price_cents") or 0.0)
@@ -234,7 +239,14 @@ class DiscordNotifier:
             or record.get("market_type")
             or ""
         ).strip()
-        pieces = ["Polymarket market matched"]
+        provisional = bool(record.get("market_discovery_candidate")) and not bool(
+            record.get("market_public_moneyline_confirmed")
+        )
+        pieces = [
+            "Polymarket candidate found · authenticated validation pending"
+            if provisional
+            else "Polymarket market matched"
+        ]
         if title:
             pieces.append(f"Contract: {title}")
         if market_type:

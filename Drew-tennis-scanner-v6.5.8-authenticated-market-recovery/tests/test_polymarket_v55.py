@@ -4,6 +4,7 @@ from unittest.mock import patch
 from scanner.polymarket import (
     _build_match_row,
     _flatten_events,
+    _player_match_score,
     extract_bbo_prices,
     infer_player_market_side,
     infer_player_prices,
@@ -31,6 +32,70 @@ def row(p1="A. Alpha", p2="B. Beta", live=True, title=None):
 
 
 class MarketLookupTests(unittest.TestCase):
+    def test_middle_initial_rehberg_matches_full_name(self):
+        self.assertGreaterEqual(
+            _player_match_score("M. H. Rehberg", "Max Hans Rehberg"),
+            0.96,
+        )
+        self.assertGreaterEqual(
+            _player_match_score("M. H. Rehberg", "Rehberg, Max Hans"),
+            0.95,
+        )
+        self.assertEqual(
+            _player_match_score("M. H. Rehberg", "Stefano Travaglia"),
+            0.0,
+        )
+
+    @patch("scanner.polymarket._paginate_events")
+    @patch("scanner.polymarket.search_us_markets")
+    def test_rehberg_travaglia_generic_public_market_is_kept_for_auth_validation(
+        self, search, paginate
+    ):
+        event = {
+            "id": "rehberg-travaglia-bonn",
+            "title": "ATP Challenger Bonn",
+            "slug": "atp-challenger-bonn-rehberg-travaglia",
+            "live": True,
+            "teams": [
+                {"name": "Max Hans Rehberg"},
+                {"name": "Stefano Travaglia"},
+            ],
+            "markets": [
+                {
+                    "id": "rehberg-travaglia-moneyline",
+                    "slug": "aec-atp-maxreh-stetra-2026-07-28",
+                    "title": "Who will win?",
+                    "active": True,
+                    "closed": False,
+                    # Public search payload can expose only generic outcomes.
+                    "marketSides": [
+                        {"long": True, "name": "YES"},
+                        {"long": False, "name": "NO"},
+                    ],
+                }
+            ],
+        }
+        search.return_value = _flatten_events([event])
+        paginate.return_value = []
+
+        matches = match_tennis_market(
+            "M. H. Rehberg",
+            "S. Travaglia",
+            league="ATP",
+            competition_group="CHALLENGER",
+            tournament="Bonn",
+        )
+
+        self.assertTrue(matches)
+        self.assertEqual(
+            matches[0]["market_slug"],
+            "aec-atp-maxreh-stetra-2026-07-28",
+        )
+        self.assertFalse(matches[0]["match_winner_market"])
+        self.assertTrue(matches[0]["discovery_candidate"])
+        self.assertGreaterEqual(matches[0]["api_match_confidence"], 80)
+        paginate.assert_not_called()
+
     @patch("scanner.polymarket._paginate_events")
     @patch("scanner.polymarket.search_us_markets")
     def test_itf_lookup_uses_search_and_sport_fallback(self, search, paginate):

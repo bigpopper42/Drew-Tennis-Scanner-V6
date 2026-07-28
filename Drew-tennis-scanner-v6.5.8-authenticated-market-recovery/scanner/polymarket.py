@@ -21,6 +21,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .market_validation import (
+    has_non_moneyline_signature,
     is_match_winner_moneyline,
     market_question,
     sports_market_type,
@@ -52,7 +53,7 @@ def _http_session() -> requests.Session:
         allowed_methods=frozenset({"GET"}), raise_on_status=False,
     )
     session.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8))
-    session.headers.update({"Accept": "application/json", "User-Agent": "DrewTennisScanner/6.5.7"})
+    session.headers.update({"Accept": "application/json", "User-Agent": "DrewTennisScanner/6.5.8"})
     return session
 
 
@@ -388,7 +389,18 @@ def _build_match_row(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _flatten_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Backward-compatible one-row-per-market flattening used by manual search."""
+    """Return one discovery row per market without discarding valid slugs early.
+
+    The public search feed is less complete than the authenticated trading feed.
+    In particular, Challenger moneylines can omit the sports market type and can
+    expose only generic YES/NO sides. Those rows are kept as *provisional*
+    discovery candidates so the authenticated execution client can perform the
+    final market-type and player-side validation before any order is created.
+
+    Obvious non-moneyline markets are still discarded here. This preserves the
+    exact-score protections while avoiding the false-negative regression that
+    caused valid matches to be reported as "market not matched."
+    """
     rows: List[Dict[str, Any]] = []
     seen = set()
     for event in events:
@@ -400,6 +412,67 @@ def _flatten_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
             row = _build_match_row({**event, "markets": [market]})
             row["player1"] = players[0] if len(players) > 0 else row.get("player1", "")
             row["player2"] = players[1] if len(players) > 1 else row.get("player2", "")
+
+            # A strict moneyline can be used immediately. Otherwise retain a
+            # plausible event market as a provisional slug. The live,
+            # authenticated execution path validates it again and will reject
+            # it before placing an order if it is not the real moneyline.
+            if (
+                not row.get("match_winner_market")
+                and isinstance(market, dict)
+                and len(players) >= 2
+                and str(market.get("slug") or "").strip()
+                and _safe_bool(market.get("closed")) is not True
+                and _safe_bool(market.get("active")) is not False
+                and not has_non_moneyline_signature(market)
+            ):
+                raw_slug = str(market.get("slug") or "").strip().lower()
+                market_text = _market_text(market)
+                discovery_score = 0
+                if raw_slug.startswith("aec-"):
+                    discovery_score += 30
+                if any(
+                    phrase in market_text
+                    for phrase in (
+                        "match winner",
+                        "moneyline",
+                        "money line",
+                        "who will win",
+                        "will win the match",
+                    )
+                ):
+                    discovery_score += 20
+                surnames = [normalize_name(player).split()[-1] for player in players]
+                if len(surnames) >= 2 and all(surname in market_text for surname in surnames[:2]):
+                    discovery_score += 15
+                if len(_market_sides(market)) == 2:
+                    discovery_score += 10
+                row.update(
+                    {
+                        "market_id": market.get("id"),
+                        "market_title": market_question(market) or event.get("title"),
+                        "market_slug": market.get("slug"),
+                        "market_type": sports_market_type(market) or None,
+                        "sports_market_type_v2": market.get("sportsMarketTypeV2"),
+                        "discovery_candidate": True,
+                        "discovery_market_score": discovery_score,
+                        "market_validation": "provisional_public_payload",
+                        "active": market.get("active", event.get("active")),
+                        "closed": market.get("closed", event.get("closed")),
+                        "volume": market.get("volumeNum") or market.get("volume") or event.get("volumeNum") or event.get("volume"),
+                        "liquidity": market.get("liquidityNum") or market.get("liquidity") or event.get("liquidityNum") or event.get("liquidity"),
+                        "sides": _market_sides(market),
+                        "raw_market": market,
+                    }
+                )
+            else:
+                row["discovery_candidate"] = bool(row.get("match_winner_market"))
+                row["discovery_market_score"] = 100 if row.get("match_winner_market") else 0
+                row["market_validation"] = (
+                    "strict_public_moneyline"
+                    if row.get("match_winner_market")
+                    else "rejected_public_payload"
+                )
             key = (row.get("market_id"), row.get("market_slug"), row.get("market_title"))
             if key not in seen:
                 seen.add(key)
@@ -582,9 +655,9 @@ def _candidate_identity(row: Dict[str, Any]) -> Tuple[Any, Any, Any]:
     return row.get("market_id"), row.get("market_slug"), row.get("market_title")
 
 
-def _is_safe_match_winner_row(row: Dict[str, Any]) -> bool:
-    """Whether a discovery row can satisfy the worker's execution matcher."""
-    if not row.get("match_winner_market"):
+def _is_usable_discovery_row(row: Dict[str, Any]) -> bool:
+    """Whether a row has a usable slug for authenticated final validation."""
+    if not (row.get("match_winner_market") or row.get("discovery_candidate")):
         return False
     if not str(row.get("market_slug") or "").strip():
         return False
@@ -596,44 +669,55 @@ def _is_safe_match_winner_row(row: Dict[str, Any]) -> bool:
 
 
 def _player_match_score(expected: str, candidate: str) -> float:
-    """Initial, surname, multi-surname, and reversed-name similarity."""
+    """Initial-aware player matching that tolerates middle names and initials.
+
+    Examples that must resolve to the same player:
+    ``M. H. Rehberg`` / ``Max Hans Rehberg`` / ``Max Rehberg`` and
+    ``R. Pascual Ferra`` / ``Reynaldo Pascual Ferra``.
+    """
     left, right = normalize_name(expected), normalize_name(candidate)
     if not left or not right:
         return 0.0
     if left == right:
         return 1.0
     left_tokens, right_tokens = left.split(), right.split()
+
+    # A surname-only value is useful but not as strong as a first-name match.
     if len(left_tokens) == 1:
         return 0.90 if left_tokens[0] in right_tokens else 0.0
     if len(right_tokens) == 1:
         return 0.90 if right_tokens[0] in left_tokens else 0.0
 
-    def ordered_score(first: List[str], second: List[str]) -> float:
-        first_surnames, second_surnames = first[1:], second[1:]
-        if first_surnames != second_surnames:
-            shorter, longer = (
-                (first_surnames, second_surnames)
-                if len(first_surnames) <= len(second_surnames)
-                else (second_surnames, first_surnames)
-            )
-            width = len(shorter)
-            if not width or not any(
-                longer[index : index + width] == shorter
-                for index in range(len(longer) - width + 1)
-            ):
-                return 0.0
-        if first[0] == second[0]:
-            return 0.99
-        if first[0][:1] == second[0][:1]:
-            return 0.96
+    left_surname = left_tokens[-1]
+    if left_surname not in right_tokens:
         return 0.0
 
-    direct = ordered_score(left_tokens, right_tokens)
-    if direct:
-        return direct
-    reversed_right = [right_tokens[-1], *right_tokens[:-1]]
-    reversed_score = ordered_score(left_tokens, reversed_right)
-    return min(reversed_score, 0.95) if reversed_score else 0.0
+    # Compare the expected first name/initial against every non-surname token.
+    # This also handles provider payloads that reverse the display order.
+    first = left_tokens[0]
+    candidate_given_tokens = [token for token in right_tokens if token != left_surname]
+    if not candidate_given_tokens:
+        return 0.90
+    if first in candidate_given_tokens:
+        base = 0.99
+    elif any(first[:1] == token[:1] for token in candidate_given_tokens):
+        base = 0.96
+    else:
+        return 0.0
+
+    # Middle initials/names add confidence when they agree, but never become a
+    # required surname. This is the V6.5.7 Rehberg regression fix.
+    expected_middle = left_tokens[1:-1]
+    candidate_middle = [token for token in candidate_given_tokens if token != first]
+    if expected_middle and candidate_middle:
+        middle_hits = sum(
+            1
+            for token in expected_middle
+            if any(token == other or token[:1] == other[:1] for other in candidate_middle)
+        )
+        if middle_hits == len(expected_middle):
+            return min(1.0, base + 0.02)
+    return base
 
 
 def _row_player_pair_score(row: Dict[str, Any], player1: str, player2: str) -> float:
@@ -708,8 +792,8 @@ def match_tennis_market(
             copy["lookup_source"] = source
             candidates.append(copy)
 
-    def best_safe_pair_score() -> float:
-        """Only safe moneylines may stop the fallback search chain.
+    def best_usable_pair_score() -> float:
+        """Only plausible execution slugs may stop the fallback search chain.
 
         Exact-score props often contain both player names and therefore receive
         a strong pair score. Version 6.5.6 accidentally treated that as a good
@@ -721,7 +805,7 @@ def match_tennis_market(
             (
                 _row_player_pair_score(row, player1, player2)
                 for row in candidates
-                if _is_safe_match_winner_row(row)
+                if _is_usable_discovery_row(row)
             ),
             default=0.0,
         )
@@ -736,20 +820,20 @@ def match_tennis_market(
 
     # Fast path: the exact pair normally finds the market immediately.
     search(f"{player1} {player2}", min(max(1, search_pages), 2))
-    if best_safe_pair_score() < 0.88:
+    if best_usable_pair_score() < 0.88:
         search(f"{player2} {player1}", 1)
-    if best_safe_pair_score() < 0.88 and s1 and s2:
+    if best_usable_pair_score() < 0.88 and s1 and s2:
         search(f"{s1} vs {s2}", 1)
-    if best_safe_pair_score() < 0.88 and s1 and s2:
+    if best_usable_pair_score() < 0.88 and s1 and s2:
         search(f"{s1} {s2}", 2)
-    if best_safe_pair_score() < 0.82:
+    if best_usable_pair_score() < 0.82:
         search(player1, 1)
-        if best_safe_pair_score() < 0.82:
+        if best_usable_pair_score() < 0.82:
             search(player2, 1)
 
     normalized_group = str(competition_group or "").strip().upper()
     normalized_league = str(league or "").strip().lower()
-    if best_safe_pair_score() < 0.82 and normalized_league in {"atp", "wta"} and normalized_group in {"TOUR", "CHALLENGER"}:
+    if best_usable_pair_score() < 0.82 and normalized_league in {"atp", "wta"} and normalized_group in {"TOUR", "CHALLENGER"}:
         try:
             add(fetch_league_events(normalized_league, limit=50, max_pages=3), f"league:{normalized_league}")
         except (requests.RequestException, PolymarketUSError, ValueError, TypeError):
@@ -757,7 +841,7 @@ def match_tennis_market(
 
     # ITF markets are not guaranteed to sit under an ATP/WTA league slug, so the
     # sport endpoint is the final recall fallback when searches did not find both players.
-    if best_safe_pair_score() < 0.82 and include_sport_fallback:
+    if best_usable_pair_score() < 0.82 and include_sport_fallback:
         try:
             sport_events = _paginate_events(
                 "/v2/sports/tennis/events",
@@ -771,16 +855,27 @@ def match_tennis_market(
 
     ranked: List[Tuple[float, Dict[str, Any]]] = []
     for row in candidates:
-        if not _is_safe_match_winner_row(row):
+        if not _is_usable_discovery_row(row):
             continue
         pair = _row_player_pair_score(row, player1, player2)
         if pair < 0.72:
             continue
-        market_bonus = 0.06
+        market_bonus = 0.06 if row.get("match_winner_market") else 0.035
+        discovery_bonus = min(
+            0.02,
+            max(0.0, float(row.get("discovery_market_score") or 0.0)) / 5000.0,
+        )
         live_bonus = 0.03 if row.get("event_live") else 0.0
         tournament_similarity = _tournament_similarity(tournament, row)
         tournament_bonus = 0.06 * tournament_similarity
-        score = min(1.0, pair * 0.86 + market_bonus + live_bonus + tournament_bonus)
+        score = min(
+            1.0,
+            pair * 0.86
+            + market_bonus
+            + discovery_bonus
+            + live_bonus
+            + tournament_bonus,
+        )
         row["api_match_confidence"] = round(score * 100, 1)
         row["api_pair_similarity"] = round(pair * 100, 1)
         row["api_tournament_similarity"] = round(tournament_similarity * 100, 1)
@@ -788,8 +883,10 @@ def match_tennis_market(
 
     ranked.sort(
         key=lambda item: (
-            item[0],
             bool(item[1].get("match_winner_market")),
+            item[0],
+            float(item[1].get("discovery_market_score") or 0.0),
+            bool(item[1].get("discovery_candidate")),
             bool(item[1].get("event_live")),
             float(item[1].get("volume") or 0),
         ),
@@ -953,6 +1050,14 @@ def enrich_market_row(row: Dict[str, Any], *, include_bbo: bool = True) -> Dict[
         enriched["market_type"] = sports_market_type(merged_market) or enriched.get("market_type")
         enriched["sports_market_type_v2"] = merged_market.get("sportsMarketTypeV2") or enriched.get("sports_market_type_v2")
         enriched["match_winner_market"] = is_match_winner_moneyline(merged_market)
+        if enriched["match_winner_market"]:
+            enriched["discovery_candidate"] = True
+            enriched["market_validation"] = "strict_enriched_moneyline"
+        elif has_non_moneyline_signature(merged_market):
+            enriched["discovery_candidate"] = False
+            enriched["market_validation"] = "rejected_enriched_non_moneyline"
+        elif enriched.get("discovery_candidate"):
+            enriched["market_validation"] = "pending_authenticated_validation"
     bbo_payload = get_bbo(slug) if include_bbo and slug else {}
     bbo = extract_bbo_prices(bbo_payload)
     metrics = extract_market_metrics(enriched)

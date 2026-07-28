@@ -134,6 +134,54 @@ class WorkerLogicTests(unittest.TestCase):
         selected = self.worker._select_market_candidate(rows)
         self.assertEqual(selected["market_slug"], "safe")
 
+    def test_provisional_public_candidate_reaches_authenticated_execution_gate(self):
+        rows = [
+            {
+                "market_slug": "aec-atp-maxreh-stetra-2026-07-28",
+                "match_winner_market": False,
+                "discovery_candidate": True,
+                "api_match_confidence": 96,
+                "active": True,
+                "closed": False,
+            }
+        ]
+        selected = self.worker._select_market_candidate(rows)
+        self.assertIsNotNone(selected)
+        self.assertEqual(
+            selected["market_slug"],
+            "aec-atp-maxreh-stetra-2026-07-28",
+        )
+
+    @patch("scanner.worker_runtime.scan_both_players", return_value=[])
+    @patch("scanner.worker_runtime.enrich_market_row")
+    def test_process_event_does_not_discard_provisional_slug(
+        self, enrich, _scan
+    ):
+        provisional = {
+            "market_slug": "aec-atp-maxreh-stetra-2026-07-28",
+            "market_title": "Who will win?",
+            "match_winner_market": False,
+            "discovery_candidate": True,
+            "api_match_confidence": 96,
+            "active": True,
+            "closed": False,
+        }
+        enrich.return_value = dict(provisional)
+        event = {
+            "event_key": "rehberg-travaglia",
+            "event_first_player": "M. H. Rehberg",
+            "event_second_player": "S. Travaglia",
+            "tournament_name": "Bonn",
+        }
+        with patch.object(self.worker, "_find_market", return_value=provisional):
+            _records, market_found, _counts = self.worker._process_event(
+                event,
+                {},
+                "cycle",
+                "2026-07-28T08:55:26-07:00",
+            )
+        self.assertTrue(market_found)
+
     def test_dedupe_key_ignores_informational_price_but_not_key_order(self):
         base = {
             "event_key": "1",

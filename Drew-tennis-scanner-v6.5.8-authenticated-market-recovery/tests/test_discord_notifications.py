@@ -96,6 +96,46 @@ def test_discord_formats_basic_trade_alert() -> None:
     assert "98.0¢" in message
 
 
+def test_discord_says_execution_will_retry_when_public_lookup_misses() -> None:
+    notifier = DiscordNotifier(
+        "https://discord.com/api/webhooks/123/token",
+        timezone_name="America/Phoenix",
+    )
+    payload = sample_record()
+    payload.update(
+        {
+            "market_found": False,
+            "execution_market_lookup_retry_enabled": True,
+            "market_title": None,
+            "market_price_cents": 0.0,
+        }
+    )
+
+    message = notifier.format_trade_alert(payload)
+
+    assert "execution engine will retry before rejecting" in message
+    assert "Polymarket market not matched" not in message
+
+
+def test_discord_marks_publicly_incomplete_candidate_as_pending_auth_validation() -> None:
+    notifier = DiscordNotifier(
+        "https://discord.com/api/webhooks/123/token",
+        timezone_name="America/Phoenix",
+    )
+    payload = sample_record()
+    payload.update(
+        {
+            "market_discovery_candidate": True,
+            "market_public_moneyline_confirmed": False,
+            "sports_market_type_v2": None,
+        }
+    )
+
+    message = notifier.format_trade_alert(payload)
+
+    assert "authenticated validation pending" in message
+
+
 def test_discord_only_calls_a_verified_fill_success() -> None:
     notifier = DiscordNotifier("https://discord.com/api/webhooks/123/token")
     session = FakeSession()

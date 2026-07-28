@@ -150,7 +150,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.7 locks live sizing at 20%. Any legacy Railway
+            # Version 6.5.8 locks live sizing at 20%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(
@@ -564,12 +564,15 @@ class RailwayShadowWorker:
         if market_row:
             try:
                 market_row = enrich_market_row(market_row, include_bbo=True)
-                if not market_row.get("match_winner_market"):
+                if not (
+                    market_row.get("match_winner_market")
+                    or market_row.get("discovery_candidate")
+                ):
                     market_errors.append(
                         "Polymarket candidate was rejected after live metadata showed it was not the match-winner moneyline."
                     )
                     market_row = None
-                else:
+                elif market_row.get("match_winner_market"):
                     bbo_prices = extract_bbo_prices(market_row.get("bbo_payload") or {})
                     inferred = infer_player_prices(
                         market_row,
@@ -587,6 +590,15 @@ class RailwayShadowWorker:
                         market_errors.append(
                             "Polymarket was matched, but player-side prices could not be safely inferred for both players."
                         )
+                else:
+                    # Public Challenger payloads can omit the market type and
+                    # named sides. Keep the slug and let the authenticated
+                    # execution client perform the decisive moneyline/name/side
+                    # validation before any order is submitted.
+                    market_row["market_validation"] = "pending_authenticated_validation"
+                    market_errors.append(
+                        "Polymarket slug matched provisionally; authenticated execution validation is required before trading."
+                    )
             except Exception as exc:
                 market_errors.append(f"Polymarket pricing error: {exc}")
 
@@ -643,8 +655,11 @@ class RailwayShadowWorker:
         if selected is None:
             diagnostics: List[Dict[str, Any]] = []
             for row in candidates[:10]:
-                if not row.get("match_winner_market"):
-                    rejection = "not_match_winner"
+                if not (
+                    row.get("match_winner_market")
+                    or row.get("discovery_candidate")
+                ):
+                    rejection = "not_usable_discovery_candidate"
                 elif row.get("closed") is True or row.get("active") is False:
                     rejection = "closed_or_inactive"
                 elif not str(row.get("market_slug") or "").strip():
@@ -667,6 +682,9 @@ class RailwayShadowWorker:
                         "confidence": row.get("api_match_confidence"),
                         "pair_similarity": row.get("api_pair_similarity"),
                         "match_winner": bool(row.get("match_winner_market")),
+                        "provisional": bool(row.get("discovery_candidate"))
+                        and not bool(row.get("match_winner_market")),
+                        "market_validation": row.get("market_validation"),
                         "rejection": rejection,
                     }
                 )
@@ -696,7 +714,10 @@ class RailwayShadowWorker:
         self, candidates: Sequence[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
         for row in candidates:
-            if not row.get("match_winner_market"):
+            if not (
+                row.get("match_winner_market")
+                or row.get("discovery_candidate")
+            ):
                 continue
             if row.get("closed") is True or row.get("active") is False:
                 continue
@@ -767,6 +788,9 @@ class RailwayShadowWorker:
             "market_confidence": market_row.get("market_confidence"),
             "market_type": market_row.get("market_type"),
             "sports_market_type_v2": market_row.get("sports_market_type_v2"),
+            "market_validation": market_row.get("market_validation"),
+            "discovery_candidate": bool(market_row.get("discovery_candidate")),
+            "public_moneyline_confirmed": bool(market_row.get("match_winner_market")),
             "pair_similarity": market_row.get("api_pair_similarity"),
             "tournament_similarity": market_row.get("api_tournament_similarity"),
             "active": market_row.get("active"),
@@ -829,11 +853,17 @@ class RailwayShadowWorker:
             "event_serve": event.get("event_serve"),
             "event_state": event_state,
             "market_found": bool(market_row),
+            "execution_market_lookup_retry_enabled": bool(
+                self.config.polymarket_execution_enabled
+            ),
             "market_id": market_row.get("market_id"),
             "market_slug": market_row.get("market_slug"),
             "market_title": market_row.get("market_title"),
             "market_type": market_row.get("market_type"),
             "sports_market_type_v2": market_row.get("sports_market_type_v2"),
+            "market_validation": market_row.get("market_validation"),
+            "market_discovery_candidate": bool(market_row.get("discovery_candidate")),
+            "market_public_moneyline_confirmed": bool(market_row.get("match_winner_market")),
             "market_lookup_source": market_row.get("lookup_source"),
             "market_match_confidence": market_row.get("api_match_confidence"),
             "market_side": market_side,

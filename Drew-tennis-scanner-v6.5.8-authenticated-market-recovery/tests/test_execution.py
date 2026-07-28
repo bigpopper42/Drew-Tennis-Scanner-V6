@@ -89,6 +89,28 @@ class FakeMarkets:
         return self.book_payload
 
 
+class FakeMarketDirectory:
+    """Return different authenticated market payloads for ranked candidates."""
+
+    def __init__(
+        self,
+        markets: dict[str, FakeMarkets],
+        *,
+        book_slug: str,
+    ) -> None:
+        self.markets = markets
+        self.book_slug = book_slug
+        self.retrieve_calls: list[str] = []
+
+    def retrieve_by_slug(self, slug: str) -> dict[str, Any]:
+        self.retrieve_calls.append(slug)
+        return self.markets[slug].market_payload
+
+    def book(self, slug: str) -> dict[str, Any]:
+        assert slug == self.book_slug
+        return self.markets[slug].book_payload
+
+
 class FakeOrders:
     def __init__(
         self,
@@ -246,6 +268,123 @@ def test_missing_discovery_side_continues_when_live_market_maps_player() -> None
     assert client.orders.create_calls[0]["intent"] == "ORDER_INTENT_BUY_LONG"
 
 
+def test_execution_recovers_when_worker_record_has_no_market_slug(monkeypatch) -> None:
+    slug = "aec-atp-maxreh-stetra-2026-07-28"
+    markets = FakeMarkets(
+        slug=slug,
+        title="ATP Challenger Bonn",
+        description="Match winner market",
+        sports_market_type_v2=None,
+        market_sides=[
+            {"long": True, "team": {"name": "Max Hans Rehberg"}},
+            {"long": False, "team": {"name": "Stefano Travaglia"}},
+        ],
+    )
+    client = FakeClient(markets=markets)
+    engine = PolymarketExecutionEngine(config(), client=client)
+    monkeypatch.setattr(
+        "scanner.execution.match_tennis_market",
+        lambda *args, **kwargs: [
+            {
+                "market_slug": slug,
+                "api_match_confidence": 97.0,
+                "discovery_candidate": True,
+            }
+        ],
+    )
+    trade_record = record(
+        side=None,
+        player="M. H. Rehberg",
+        opponent="S. Travaglia",
+        slug="",
+    )
+    trade_record.update(
+        {
+            "market_found": False,
+            "market_match_confidence": 0.0,
+            "league": "ATP",
+            "competition_group": "Challenger",
+            "tournament": "Bonn",
+        }
+    )
+
+    result = engine.execute_trade(trade_record)
+
+    assert result.status == "EXECUTED"
+    assert result.market_slug == slug
+    assert result.market_side == LONG_SIDE
+
+
+def test_execution_checks_later_authenticated_candidate_when_first_is_prop(
+    monkeypatch,
+) -> None:
+    prop_slug = "astatc-atp-maxreh-stetra-2026-07-28-es-0-2"
+    moneyline_slug = "aec-atp-maxreh-stetra-2026-07-28"
+    prop = FakeMarkets(
+        slug=prop_slug,
+        title="Max Hans Rehberg vs Stefano Travaglia",
+        question="Max Hans Rehberg wins 2-0",
+        sports_market_type_v2="SPORTS_MARKET_TYPE_PROP",
+        market_sides=[
+            {"long": True, "team": {"name": "Max Hans Rehberg"}},
+            {"long": False, "team": {"name": "Stefano Travaglia"}},
+        ],
+    )
+    moneyline = FakeMarkets(
+        slug=moneyline_slug,
+        title="ATP Challenger Bonn",
+        description="Match winner market",
+        sports_market_type_v2=None,
+        market_sides=[
+            {"long": True, "team": {"name": "Max Hans Rehberg"}},
+            {"long": False, "team": {"name": "Stefano Travaglia"}},
+        ],
+    )
+    directory = FakeMarketDirectory(
+        {prop_slug: prop, moneyline_slug: moneyline},
+        book_slug=moneyline_slug,
+    )
+    client = FakeClient(markets=directory)  # type: ignore[arg-type]
+    engine = PolymarketExecutionEngine(config(), client=client)
+    monkeypatch.setattr(
+        "scanner.execution.match_tennis_market",
+        lambda *args, **kwargs: [
+            {
+                "market_slug": prop_slug,
+                "api_match_confidence": 99.0,
+                "discovery_candidate": True,
+            },
+            {
+                "market_slug": moneyline_slug,
+                "api_match_confidence": 97.0,
+                "discovery_candidate": True,
+            },
+        ],
+    )
+    trade_record = record(
+        side=None,
+        player="M. H. Rehberg",
+        opponent="S. Travaglia",
+        slug="",
+    )
+    trade_record.update(
+        {
+            "market_found": False,
+            "market_match_confidence": 0.0,
+            "league": "ATP",
+            "competition_group": "CHALLENGER",
+            "tournament": "Bonn",
+        }
+    )
+
+    result = engine.execute_trade(trade_record)
+
+    assert result.status == "EXECUTED"
+    assert result.market_slug == moneyline_slug
+    assert result.market_side == LONG_SIDE
+    assert directory.retrieve_calls == [prop_slug, moneyline_slug]
+
+
 def test_generic_title_validates_from_monteiro_and_mazza_market_sides() -> None:
     slug = "aec-atp-thimon-matmaz-2026-07-27"
     markets = FakeMarkets(
@@ -314,6 +453,47 @@ def test_generic_skatov_faurel_market_without_type_executes_from_structured_side
 
     result = engine.execute_trade(
         record(side=None, player="T. Skatov", opponent="T. Faurel", slug=slug)
+    )
+
+    assert result.status == "EXECUTED"
+    assert result.market_side == LONG_SIDE
+    assert client.orders.create_calls[0]["intent"] == "ORDER_INTENT_BUY_LONG"
+
+
+def test_rehberg_middle_initial_maps_to_authenticated_full_name() -> None:
+    slug = "aec-atp-maxreh-stetra-2026-07-28"
+    markets = FakeMarkets(
+        slug=slug,
+        title="ATP Challenger Bonn",
+        description="Match winner market",
+        sports_market_type_v2=None,
+        market_sides=[
+            {
+                "long": True,
+                "team": {
+                    "name": "Max Hans Rehberg",
+                    "abbreviation": "M. H. Rehberg",
+                },
+            },
+            {
+                "long": False,
+                "team": {
+                    "name": "Stefano Travaglia",
+                    "abbreviation": "S. Travaglia",
+                },
+            },
+        ],
+    )
+    client = FakeClient(markets=markets)
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(
+        record(
+            side=None,
+            player="M. H. Rehberg",
+            opponent="S. Travaglia",
+            slug=slug,
+        )
     )
 
     assert result.status == "EXECUTED"

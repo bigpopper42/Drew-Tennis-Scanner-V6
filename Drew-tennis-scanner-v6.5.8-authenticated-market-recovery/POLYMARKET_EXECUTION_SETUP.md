@@ -1,6 +1,6 @@
 # Polymarket US Live Execution Setup
 
-Version 6.5.7 sends each new approved scanner signal to Discord and the guarded Polymarket US execution engine. The scanner remains the only tennis decision maker.
+Version 6.5.8 sends each new approved scanner signal to Discord and the guarded Polymarket US execution engine. The scanner remains the only tennis decision maker.
 
 ## Locked live behavior
 
@@ -12,6 +12,7 @@ Version 6.5.7 sends each new approved scanner signal to Discord and the guarded 
 - Duplicate protection: unchanged signals and unfinished same-market orders remain blocked.
 - Market type: only the ordinary match-winner moneyline is allowed.
 - Lookup fallback: rejected props do not stop surname, league, or tennis-wide searches for the real moneyline.
+- Ranked validation: execution checks candidate slugs through the SDK in order and skips invalid props or name mismatches instead of stopping at the first result.
 - Generic market support: when type text is omitted, exactly two different named players on opposite LONG/SHORT contracts can validate the moneyline after all prop signatures are excluded.
 - Market order: immediate-or-cancel with configured slippage tolerance.
 - Regulatory flag: `MANUAL_ORDER_INDICATOR_AUTOMATIC`.
@@ -64,7 +65,7 @@ EXECUTION_SLIPPAGE_TICKS=1
 EXECUTION_MIN_MARKET_CONFIDENCE=80
 ```
 
-Legacy `EXECUTION_BANKROLL_PCT` and `EXECUTION_MAX_ORDER_USD` variables may remain in Railway. Version 6.5.7 ignores them.
+Legacy `EXECUTION_BANKROLL_PCT` and `EXECUTION_MAX_ORDER_USD` variables may remain in Railway. Version 6.5.8 ignores them.
 
 ## Discord execution meanings
 

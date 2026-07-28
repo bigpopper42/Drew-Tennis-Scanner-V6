@@ -20,6 +20,7 @@ from .market_validation import (
     market_question,
     sports_market_type,
 )
+from .polymarket import match_tennis_market
 
 
 OPEN_MARKET_STATE = "MARKET_STATE_OPEN"
@@ -154,33 +155,141 @@ class PolymarketExecutionEngine:
             return reject("Scanner record is not an approved TRADE.")
         if not record.get("alert_eligible"):
             return reject("Scanner record is not eligible for a new trade alert.")
-        if not record.get("market_found") or not market_slug:
-            return reject("Polymarket US market was not safely matched.")
         try:
             confidence = float(record.get("market_match_confidence") or 0.0)
         except (TypeError, ValueError):
             confidence = 0.0
-        if confidence < self.config.minimum_market_confidence:
-            return reject(
-                "Market match confidence is below the execution minimum."
-            )
 
         try:
-            market_payload = self.client.markets.retrieve_by_slug(market_slug)
-            market = _market_payload(market_payload)
-            if not market:
-                return reject("Polymarket US did not return the matched market.")
+            # Discovery is only a recall step. Build an ordered list of possible
+            # slugs, then let the SDK market payload decide which one is the real
+            # two-player moneyline. This avoids two failure modes:
+            #   1. a worker miss causing an immediate rejection; and
+            #   2. the first incomplete/prop search result hiding a valid
+            #      moneyline later in the ranked result set.
+            candidate_rows: list[dict[str, Any]] = []
+            seen_slugs: set[str] = set()
 
-            authenticated_market_question = market_question(market)
-            authenticated_market_type = sports_market_type(market)
-            if market.get("active") is not True or market.get("closed") is True:
-                return reject("Polymarket market is not active and tradable.")
-            if not is_match_winner_moneyline(market):
-                return reject(
-                    "Authenticated Polymarket market is not the match-winner moneyline."
+            def add_candidate(slug: Any, score: Any, side: Any = "") -> None:
+                candidate_slug = str(slug or "").strip()
+                if not candidate_slug or candidate_slug in seen_slugs:
+                    return
+                try:
+                    candidate_confidence = float(score or 0.0)
+                except (TypeError, ValueError):
+                    candidate_confidence = 0.0
+                if candidate_confidence < self.config.minimum_market_confidence:
+                    return
+                seen_slugs.add(candidate_slug)
+                candidate_rows.append(
+                    {
+                        "market_slug": candidate_slug,
+                        "api_match_confidence": candidate_confidence,
+                        "market_side": str(side or "").strip(),
+                    }
                 )
-            if not self._market_names_match(market, player, opponent):
-                return reject("Live market names do not match the scanner signal.")
+
+            add_candidate(market_slug, confidence, market_side)
+
+            # Always refresh when the worker missed or only had a provisional
+            # public candidate. A strict public moneyline can use its known slug
+            # directly, preserving the fast path for normal matches.
+            needs_fresh_lookup = (
+                not market_slug
+                or bool(record.get("market_discovery_candidate"))
+                or not bool(record.get("market_public_moneyline_confirmed", True))
+            )
+            if needs_fresh_lookup:
+                try:
+                    fallback_candidates = match_tennis_market(
+                        player,
+                        opponent,
+                        league=str(record.get("league") or ""),
+                        competition_group=str(record.get("competition_group") or ""),
+                        tournament=str(record.get("tournament") or ""),
+                        event_start=str(record.get("event_time") or ""),
+                        include_sport_fallback=True,
+                    )
+                except Exception:
+                    fallback_candidates = []
+                for row in fallback_candidates:
+                    add_candidate(
+                        row.get("market_slug"),
+                        row.get("api_match_confidence"),
+                        row.get("market_side"),
+                    )
+
+            if not candidate_rows:
+                return reject("Polymarket US market was not safely matched.")
+
+            market: dict[str, Any] = {}
+            single_candidate_failure = ""
+            for candidate in candidate_rows:
+                candidate_slug = str(candidate["market_slug"])
+                try:
+                    market_payload = self.client.markets.retrieve_by_slug(
+                        candidate_slug
+                    )
+                except Exception as exc:
+                    single_candidate_failure = f"retrieve_failed:{exc}"
+                    continue
+
+                candidate_market = _market_payload(market_payload)
+                if not candidate_market:
+                    single_candidate_failure = "empty"
+                    continue
+                authenticated_market_question = market_question(candidate_market)
+                authenticated_market_type = sports_market_type(candidate_market)
+                if (
+                    candidate_market.get("active") is not True
+                    or candidate_market.get("closed") is True
+                ):
+                    single_candidate_failure = "inactive"
+                    continue
+                if not is_match_winner_moneyline(candidate_market):
+                    single_candidate_failure = "not_moneyline"
+                    continue
+                if not self._market_names_match(
+                    candidate_market, player, opponent
+                ):
+                    single_candidate_failure = "name_mismatch"
+                    continue
+
+                market_slug = candidate_slug
+                confidence = float(candidate["api_match_confidence"])
+                market_side = str(
+                    candidate.get("market_side") or market_side
+                ).strip()
+                market = candidate_market
+                authenticated_market_question = market_question(market)
+                authenticated_market_type = sports_market_type(market)
+                break
+
+            if not market:
+                # Preserve the precise legacy reason when the scanner supplied a
+                # single explicit slug. For lookup recovery, report that every
+                # candidate failed authenticated validation rather than claiming
+                # no public match existed.
+                if len(candidate_rows) == 1 and market_slug:
+                    if single_candidate_failure == "empty":
+                        return reject(
+                            "Polymarket US did not return the matched market."
+                        )
+                    if single_candidate_failure == "inactive":
+                        return reject(
+                            "Polymarket market is not active and tradable."
+                        )
+                    if single_candidate_failure == "not_moneyline":
+                        return reject(
+                            "Authenticated Polymarket market is not the match-winner moneyline."
+                        )
+                    if single_candidate_failure == "name_mismatch":
+                        return reject(
+                            "Live market names do not match the scanner signal."
+                        )
+                return reject(
+                    "No authenticated Polymarket match-winner market matched both players."
+                )
 
             # Multiple unrelated markets are always allowed. A same-market
             # position is allowed only for a scanner-approved UPGRADE so the
@@ -780,17 +889,13 @@ def _structured_market_sides(market: Mapping[str, Any]) -> list[dict[str, Any]]:
     return sides
 
 
-def _surname_sequences_agree(left: list[str], right: list[str]) -> bool:
-    if not left or not right:
-        return False
-    if left == right:
-        return True
-    shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
-    width = len(shorter)
-    return any(longer[index : index + width] == shorter for index in range(len(longer) - width + 1))
-
-
 def _name_match_score(expected: str, candidate: str) -> float:
+    """Match abbreviated API Tennis names to authenticated market-side names.
+
+    Middle initials are optional identity evidence, not surname components.
+    V6.5.7 incorrectly treated the ``H.`` in ``M. H. Rehberg`` as part of the
+    surname and therefore failed to map it to ``Max Hans Rehberg``.
+    """
     left = _normalize(expected)
     right = _normalize(candidate)
     if not left or not right:
@@ -809,28 +914,31 @@ def _name_match_score(expected: str, candidate: str) -> float:
     if len(right_tokens) == 1:
         return 0.95 if right_tokens[0] in left_tokens else 0.0
 
-    def score_ordered(first: list[str], second: list[str]) -> float:
-        first_name, second_name = first[0], second[0]
-        first_surnames, second_surnames = first[1:], second[1:]
-        if not _surname_sequences_agree(first_surnames, second_surnames):
-            return 0.0
-        exact_surnames = first_surnames == second_surnames
-        if first_name == second_name:
-            return 0.99 if exact_surnames else 0.96
-        if (len(first_name) == 1 or len(second_name) == 1) and first_name[0] == second_name[0]:
-            return 0.97 if exact_surnames else 0.94
+    expected_surname = left_tokens[-1]
+    if expected_surname not in right_tokens:
         return 0.0
 
-    ordered = score_ordered(left_tokens, right_tokens)
-    if ordered:
-        return ordered
+    expected_first = left_tokens[0]
+    candidate_given = [token for token in right_tokens if token != expected_surname]
+    if not candidate_given:
+        return 0.95
+    if expected_first in candidate_given:
+        base = 0.99
+    elif any(expected_first[:1] == token[:1] for token in candidate_given):
+        base = 0.97
+    else:
+        return 0.0
 
-    # Some sports feeds return "Surname, First" while others return
-    # "First Surname". Try the reversed form without accepting token-set-only
-    # matches that could confuse two different players.
-    reversed_right = [right_tokens[-1], *right_tokens[:-1]]
-    reversed_score = score_ordered(left_tokens, reversed_right)
-    return min(reversed_score, 0.96) if reversed_score else 0.0
+    expected_middle = left_tokens[1:-1]
+    if expected_middle:
+        middle_hits = sum(
+            1
+            for token in expected_middle
+            if any(token == other or token[:1] == other[:1] for other in candidate_given)
+        )
+        if middle_hits == len(expected_middle):
+            return min(1.0, base + 0.02)
+    return base
 
 
 def _unique_best_side(
@@ -869,7 +977,9 @@ def _surname_matches(name: str, haystack: str) -> bool:
     if len(tokens) < 2:
         return False
     haystack_tokens = set(_normalize(haystack).split())
-    surname_tokens = tokens[1:]
+    # Ignore one-letter middle initials such as the H in M. H. Rehberg while
+    # preserving real compound surnames such as Pascual Ferra.
+    surname_tokens = [token for token in tokens[1:] if len(token) >= 3]
     return bool(surname_tokens) and all(
-        len(token) >= 3 and token in haystack_tokens for token in surname_tokens
+        token in haystack_tokens for token in surname_tokens
     )
