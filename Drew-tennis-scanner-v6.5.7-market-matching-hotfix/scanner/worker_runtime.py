@@ -150,7 +150,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.6 locks live sizing at 20%. Any legacy Railway
+            # Version 6.5.7 locks live sizing at 20%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(
@@ -640,6 +640,45 @@ class RailwayShadowWorker:
             include_sport_fallback=True,
         )
         selected = self._select_market_candidate(candidates)
+        if selected is None:
+            diagnostics: List[Dict[str, Any]] = []
+            for row in candidates[:10]:
+                if not row.get("match_winner_market"):
+                    rejection = "not_match_winner"
+                elif row.get("closed") is True or row.get("active") is False:
+                    rejection = "closed_or_inactive"
+                elif not str(row.get("market_slug") or "").strip():
+                    rejection = "missing_slug"
+                else:
+                    try:
+                        confidence = float(row.get("api_match_confidence") or 0.0)
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+                    rejection = (
+                        "confidence_below_minimum"
+                        if confidence < self.config.minimum_market_confidence
+                        else "unknown"
+                    )
+                diagnostics.append(
+                    {
+                        "slug": str(row.get("market_slug") or ""),
+                        "title": str(row.get("market_title") or "")[:160],
+                        "source": str(row.get("lookup_source") or ""),
+                        "confidence": row.get("api_match_confidence"),
+                        "pair_similarity": row.get("api_pair_similarity"),
+                        "match_winner": bool(row.get("match_winner_market")),
+                        "rejection": rejection,
+                    }
+                )
+            log_json(
+                "polymarket_market_unmatched",
+                event_key=event_key(event),
+                player1=player1,
+                player2=player2,
+                tournament=str(event.get("tournament_name") or ""),
+                candidates_found=len(candidates),
+                candidates=diagnostics,
+            )
         ttl = (
             self.config.market_cache_ttl_seconds
             if selected is not None

@@ -285,6 +285,42 @@ def test_generic_title_validates_from_monteiro_and_mazza_market_sides() -> None:
     assert result.player_price_cents == 99.0
 
 
+def test_generic_skatov_faurel_market_without_type_executes_from_structured_sides() -> None:
+    slug = "aec-atp-timsk-thofau-2026-07-28"
+    markets = FakeMarkets(
+        slug=slug,
+        title="T. Skatov vs T. Faurel",
+        description="",
+        sports_market_type_v2=None,
+        market_sides=[
+            {
+                "long": True,
+                "team": {
+                    "name": "Timofey Skatov",
+                    "abbreviation": "T. Skatov",
+                },
+            },
+            {
+                "long": False,
+                "team": {
+                    "name": "Thomas Faurel",
+                    "abbreviation": "T. Faurel",
+                },
+            },
+        ],
+    )
+    client = FakeClient(markets=markets)
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(
+        record(side=None, player="T. Skatov", opponent="T. Faurel", slug=slug)
+    )
+
+    assert result.status == "EXECUTED"
+    assert result.market_side == LONG_SIDE
+    assert client.orders.create_calls[0]["intent"] == "ORDER_INTENT_BUY_LONG"
+
+
 def test_authenticated_side_mapping_accepts_boolean_strings_and_reversed_names() -> None:
     slug = "aec-atp-tab-gri-2026-07-28"
     markets = FakeMarkets(

@@ -1,9 +1,13 @@
-# Drew Tennis Scanner Version 6.5.6
+# Drew Tennis Scanner Version 6.5.7
 
-Version 6.5.6 keeps Drew's locked late-match tennis decision tree unchanged and completes the live Polymarket US execution fixes.
+Version 6.5.7 keeps Drew's locked late-match tennis decision tree unchanged and completes the live Polymarket US execution fixes.
 
-## Version 6.5.6 changes
+## Version 6.5.7 changes
 
+- Fixes the V6.5.6 market-matching regression that allowed an exact-score search result containing both player names to stop the lookup before the real moneyline was found.
+- Search escalation now stops only after a safe, open match-winner market has been found; rejected props cannot suppress surname, league, or sport-wide fallbacks.
+- Accepts current Polymarket tennis moneylines that omit market-type text when the payload safely exposes two different named players on opposite LONG/SHORT contracts.
+- Adds a specific T. Skatov vs T. Faurel / San Marino regression test and unmatched-candidate diagnostics in Railway logs.
 - Trades only the ordinary tennis match-winner moneyline.
 - Rejects PROP, SPREAD, TOTAL, exact-score, set-score, set-winner, game-winner, tiebreak, handicap, and total markets.
 - Rejects exact-score labels such as `Musetti wins 2-0`, `Musetti 2-0`, `wins 2 sets to 0`, and exact-score slug patterns such as `-es-0-2`.
@@ -31,14 +35,14 @@ Version 6.5.6 keeps Drew's locked late-match tennis decision tree unchanged and 
 
 ## Important sizing note
 
-Version 6.5.6 is locked to 20% in code. Legacy Railway variables named `EXECUTION_BANKROLL_PCT` and `EXECUTION_MAX_ORDER_USD` may remain, but this version does not read either one.
+Version 6.5.7 is locked to 20% in code. Legacy Railway variables named `EXECUTION_BANKROLL_PCT` and `EXECUTION_MAX_ORDER_USD` may remain, but this version does not read either one.
 
 ## Deployment
 
 1. Replace the GitHub repository contents with this archive.
 2. Commit and push.
 3. Redeploy the existing Railway service.
-4. Confirm Discord reports Version `6.5.6` and `Polymarket execution: LIVE`.
+4. Confirm Discord reports Version `6.5.7` and `Polymarket execution: LIVE`.
 5. No Supabase migration is required.
 
 See `POLYMARKET_EXECUTION_SETUP.md` for live execution details and the emergency stop.

@@ -52,7 +52,7 @@ def _http_session() -> requests.Session:
         allowed_methods=frozenset({"GET"}), raise_on_status=False,
     )
     session.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8))
-    session.headers.update({"Accept": "application/json", "User-Agent": "DrewTennisScanner/6.5.6"})
+    session.headers.update({"Accept": "application/json", "User-Agent": "DrewTennisScanner/6.5.7"})
     return session
 
 
@@ -582,6 +582,19 @@ def _candidate_identity(row: Dict[str, Any]) -> Tuple[Any, Any, Any]:
     return row.get("market_id"), row.get("market_slug"), row.get("market_title")
 
 
+def _is_safe_match_winner_row(row: Dict[str, Any]) -> bool:
+    """Whether a discovery row can satisfy the worker's execution matcher."""
+    if not row.get("match_winner_market"):
+        return False
+    if not str(row.get("market_slug") or "").strip():
+        return False
+    if _safe_bool(row.get("closed")) is True:
+        return False
+    if _safe_bool(row.get("active")) is False:
+        return False
+    return True
+
+
 def _player_match_score(expected: str, candidate: str) -> float:
     """Initial, surname, multi-surname, and reversed-name similarity."""
     left, right = normalize_name(expected), normalize_name(candidate)
@@ -695,8 +708,23 @@ def match_tennis_market(
             copy["lookup_source"] = source
             candidates.append(copy)
 
-    def best_pair_score() -> float:
-        return max((_row_player_pair_score(row, player1, player2) for row in candidates), default=0.0)
+    def best_safe_pair_score() -> float:
+        """Only safe moneylines may stop the fallback search chain.
+
+        Exact-score props often contain both player names and therefore receive
+        a strong pair score. Version 6.5.6 accidentally treated that as a good
+        search result, stopped early, and later discarded the prop—leaving no
+        market at all. This gate prevents an unsafe candidate from suppressing
+        surname, league, or sport-wide moneyline discovery.
+        """
+        return max(
+            (
+                _row_player_pair_score(row, player1, player2)
+                for row in candidates
+                if _is_safe_match_winner_row(row)
+            ),
+            default=0.0,
+        )
 
     def search(query: str, pages: int) -> None:
         if not query.strip():
@@ -708,18 +736,20 @@ def match_tennis_market(
 
     # Fast path: the exact pair normally finds the market immediately.
     search(f"{player1} {player2}", min(max(1, search_pages), 2))
-    if best_pair_score() < 0.88:
+    if best_safe_pair_score() < 0.88:
         search(f"{player2} {player1}", 1)
-    if best_pair_score() < 0.88 and s1 and s2:
+    if best_safe_pair_score() < 0.88 and s1 and s2:
+        search(f"{s1} vs {s2}", 1)
+    if best_safe_pair_score() < 0.88 and s1 and s2:
         search(f"{s1} {s2}", 2)
-    if best_pair_score() < 0.82:
+    if best_safe_pair_score() < 0.82:
         search(player1, 1)
-        if best_pair_score() < 0.82:
+        if best_safe_pair_score() < 0.82:
             search(player2, 1)
 
     normalized_group = str(competition_group or "").strip().upper()
     normalized_league = str(league or "").strip().lower()
-    if best_pair_score() < 0.82 and normalized_league in {"atp", "wta"} and normalized_group in {"TOUR", "CHALLENGER"}:
+    if best_safe_pair_score() < 0.82 and normalized_league in {"atp", "wta"} and normalized_group in {"TOUR", "CHALLENGER"}:
         try:
             add(fetch_league_events(normalized_league, limit=50, max_pages=3), f"league:{normalized_league}")
         except (requests.RequestException, PolymarketUSError, ValueError, TypeError):
@@ -727,7 +757,7 @@ def match_tennis_market(
 
     # ITF markets are not guaranteed to sit under an ATP/WTA league slug, so the
     # sport endpoint is the final recall fallback when searches did not find both players.
-    if best_pair_score() < 0.82 and include_sport_fallback:
+    if best_safe_pair_score() < 0.82 and include_sport_fallback:
         try:
             sport_events = _paginate_events(
                 "/v2/sports/tennis/events",
@@ -741,10 +771,12 @@ def match_tennis_market(
 
     ranked: List[Tuple[float, Dict[str, Any]]] = []
     for row in candidates:
+        if not _is_safe_match_winner_row(row):
+            continue
         pair = _row_player_pair_score(row, player1, player2)
         if pair < 0.72:
             continue
-        market_bonus = 0.06 if row.get("match_winner_market") else 0.0
+        market_bonus = 0.06
         live_bonus = 0.03 if row.get("event_live") else 0.0
         tournament_similarity = _tournament_similarity(tournament, row)
         tournament_bonus = 0.06 * tournament_similarity

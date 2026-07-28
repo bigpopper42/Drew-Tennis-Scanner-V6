@@ -1,7 +1,9 @@
-# Railway Handoff — Version 6.5.6
+# Railway Handoff — Version 6.5.7
 
-Version 6.5.6 keeps the scanner decision tree unchanged and completes the live execution fixes:
+Version 6.5.7 keeps the scanner decision tree unchanged and completes the live execution fixes:
 
+- exact-score search hits cannot stop the lookup before the real moneyline is found;
+- generic current tennis moneylines can be validated from two named opposite LONG/SHORT player contracts even when market-type text is omitted;
 - match-winner moneyline only;
 - exact-score and other props rejected;
 - authenticated live YES/NO mapping only;

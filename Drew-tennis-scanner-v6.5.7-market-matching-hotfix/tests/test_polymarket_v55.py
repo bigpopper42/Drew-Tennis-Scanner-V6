@@ -231,6 +231,175 @@ class MarketLookupTests(unittest.TestCase):
         self.assertIsNone(selected["market_id"])
         self.assertFalse(selected["market_slug"])
 
+    def test_generic_structured_skatov_faurel_moneyline_without_type_is_accepted(self):
+        event = {
+            "id": "skatov-faurel-san-marino",
+            "title": "ATP Challenger San Marino",
+            "teams": [
+                {"name": "Timofey Skatov"},
+                {"name": "Thomas Faurel"},
+            ],
+            "markets": [
+                {
+                    "id": "skatov-faurel-moneyline",
+                    "slug": "aec-atp-timsk-thofau-2026-07-28",
+                    "title": "T. Skatov vs T. Faurel",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {
+                            "long": True,
+                            "team": {
+                                "name": "Timofey Skatov",
+                                "abbreviation": "T. Skatov",
+                            },
+                        },
+                        {
+                            "long": False,
+                            "team": {
+                                "name": "Thomas Faurel",
+                                "abbreviation": "T. Faurel",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+
+        selected = _build_match_row(event)
+
+        self.assertTrue(selected["match_winner_market"])
+        self.assertEqual(
+            selected["market_slug"],
+            "aec-atp-timsk-thofau-2026-07-28",
+        )
+
+    def test_unspecified_type_with_named_opposite_sides_is_accepted(self):
+        event = {
+            "id": "unspecified-skatov-faurel",
+            "title": "ATP Challenger San Marino",
+            "teams": [
+                {"name": "Timofey Skatov"},
+                {"name": "Thomas Faurel"},
+            ],
+            "markets": [
+                {
+                    "id": "moneyline",
+                    "slug": "aec-atp-timsk-thofau-2026-07-28",
+                    "sportsMarketTypeV2": "SPORTS_MARKET_TYPE_UNSPECIFIED",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {"long": True, "team": {"name": "Timofey Skatov"}},
+                        {"long": False, "team": {"name": "Thomas Faurel"}},
+                    ],
+                }
+            ],
+        }
+
+        selected = _build_match_row(event)
+
+        self.assertTrue(selected["match_winner_market"])
+        self.assertEqual(
+            selected["market_slug"],
+            "aec-atp-timsk-thofau-2026-07-28",
+        )
+
+    def test_generic_yes_no_only_market_without_type_remains_rejected(self):
+        event = {
+            "id": "generic-yes-no",
+            "title": "ATP Challenger San Marino",
+            "teams": [
+                {"name": "Timofey Skatov"},
+                {"name": "Thomas Faurel"},
+            ],
+            "markets": [
+                {
+                    "id": "generic",
+                    "slug": "generic-market",
+                    "title": "Who will win?",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {"long": True, "name": "YES"},
+                        {"long": False, "name": "NO"},
+                    ],
+                }
+            ],
+        }
+
+        selected = _build_match_row(event)
+
+        self.assertFalse(selected["match_winner_market"])
+        self.assertIsNone(selected["market_slug"])
+
+    @patch("scanner.polymarket._paginate_events")
+    @patch("scanner.polymarket.search_us_markets")
+    def test_exact_score_hit_does_not_stop_skatov_faurel_moneyline_fallback(
+        self, search, paginate
+    ):
+        unsafe = row("T. Skatov", "T. Faurel", title="T. Skatov vs T. Faurel")
+        unsafe.update(
+            {
+                "market_id": "exact-score",
+                "market_slug": "astatc-atp-timsk-thofau-2026-07-28-es-2-0",
+                "market_title": "Skatov wins 2-0",
+                "match_winner_market": False,
+                "raw_market": {
+                    "question": "Skatov wins 2-0",
+                    "sportsMarketTypeV2": "SPORTS_MARKET_TYPE_PROP",
+                },
+            }
+        )
+        search.return_value = [unsafe]
+        paginate.return_value = [
+            {
+                "id": "skatov-faurel-san-marino",
+                "title": "ATP Challenger San Marino",
+                "live": True,
+                "teams": [
+                    {"name": "Timofey Skatov"},
+                    {"name": "Thomas Faurel"},
+                ],
+                "markets": [
+                    {
+                        "id": "moneyline",
+                        "slug": "aec-atp-timsk-thofau-2026-07-28",
+                        "title": "T. Skatov vs T. Faurel",
+                        "active": True,
+                        "closed": False,
+                        "marketSides": [
+                            {
+                                "long": True,
+                                "team": {"name": "Timofey Skatov"},
+                            },
+                            {
+                                "long": False,
+                                "team": {"name": "Thomas Faurel"},
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        matches = match_tennis_market(
+            "T. Skatov",
+            "T. Faurel",
+            league="ATP",
+            competition_group="OTHER",
+            tournament="San Marino",
+        )
+
+        self.assertTrue(matches)
+        self.assertEqual(
+            matches[0]["market_slug"],
+            "aec-atp-timsk-thofau-2026-07-28",
+        )
+        self.assertTrue(matches[0]["match_winner_market"])
+        self.assertGreaterEqual(matches[0]["api_match_confidence"], 80)
+        paginate.assert_called_once()
+
     @patch("scanner.polymarket._paginate_events")
     @patch("scanner.polymarket.search_us_markets")
     def test_current_teams_and_market_sides_match_mayo_pascual(self, search, paginate):

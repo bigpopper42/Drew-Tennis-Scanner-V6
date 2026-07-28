@@ -1,4 +1,13 @@
-# Version 6.5.6 Build Notes
+# Version 6.5.7 Build Notes
+
+## Fixed: V6.5.6 market lookup regression
+
+- Unsafe exact-score candidates no longer count as a successful player-pair search hit.
+- The lookup continues through reversed names, surname queries, league events, and the tennis-wide event feed until it finds a safe match-winner market or exhausts all fallbacks.
+- Current generic-title moneylines are accepted when they contain exactly two different named players assigned to opposite LONG/SHORT contracts and contain no prop, set, spread, total, or exact-score signature.
+- Generic YES/NO-only markets remain rejected because they do not identify both players safely.
+- Railway logs now include compact candidate and rejection diagnostics whenever a match remains unmatched.
+- Added direct regression coverage for `T. Skatov vs T. Faurel` at San Marino.
 
 ## Fixed: truthful order confirmation
 
@@ -42,6 +51,6 @@
 
 ## Final verification
 
-- `python -m pytest -q`: 84 tests passed.
+- `python -m pytest -q`: 89 tests passed.
 - `python -m compileall -q .`: passed.
 - Flat-root replacement ZIP verified.

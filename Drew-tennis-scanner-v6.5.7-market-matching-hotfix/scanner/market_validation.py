@@ -13,6 +13,12 @@ from collections.abc import Mapping
 from typing import Any
 
 MONEYLINE_V2 = "SPORTS_MARKET_TYPE_MONEYLINE"
+UNSPECIFIED_V2 = {
+    "UNKNOWN",
+    "UNSPECIFIED",
+    "SPORTS_MARKET_TYPE_UNKNOWN",
+    "SPORTS_MARKET_TYPE_UNSPECIFIED",
+}
 NON_MONEYLINE_V2 = {
     "SPORTS_MARKET_TYPE_SPREAD",
     "SPORTS_MARKET_TYPE_TOTAL",
@@ -77,6 +83,89 @@ def _side_text(market: Mapping[str, Any]) -> str:
         else:
             values.append(str(side or ""))
     return " ".join(values)
+
+
+def _coerce_long_flag(side: Mapping[str, Any]) -> bool | None:
+    """Read current and legacy LONG/SHORT indicators from a market side."""
+    value = side.get("long")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    normalized = normalize_market_text(value)
+    if normalized in {"true", "yes", "long", "buy long"}:
+        return True
+    if normalized in {"false", "no", "short", "buy short"}:
+        return False
+    for key in ("side", "position", "contractSide", "outcomeType", "outcome"):
+        normalized = normalize_market_text(side.get(key))
+        if normalized in {"long", "yes", "affirmative"}:
+            return True
+        if normalized in {"short", "no", "negative"}:
+            return False
+    return None
+
+
+def _competitor_name(side: Mapping[str, Any]) -> str:
+    """Return a real competitor label, not a generic YES/NO outcome label."""
+    team = side.get("team")
+    sources = [team] if isinstance(team, Mapping) else []
+    sources.append(side)
+    for source in sources:
+        for key in (
+            "name",
+            "displayName",
+            "safeName",
+            "alias",
+            "abbreviation",
+            "title",
+        ):
+            value = str(source.get(key) or "").strip()
+            normalized = normalize_market_text(value)
+            if value and normalized not in {
+                "yes",
+                "no",
+                "long",
+                "short",
+                "home",
+                "away",
+            }:
+                return value
+    return ""
+
+
+def has_binary_named_competitor_sides(market: Mapping[str, Any]) -> bool:
+    """Return True for a binary market with two named, opposite competitors.
+
+    Current Polymarket US tennis payloads do not always include a sports market
+    type or a question containing the words "match winner". The authenticated
+    sports payload still exposes a stronger structural signal: exactly one LONG
+    and one SHORT contract, each attached to a different named player. This is
+    accepted only after all exact-score/set/prop signatures have been rejected.
+    """
+    raw_sides = (
+        market.get("marketSides")
+        or market.get("sides")
+        or market.get("outcomes")
+        or []
+    )
+    if not isinstance(raw_sides, list) or len(raw_sides) != 2:
+        return False
+
+    parsed: list[tuple[bool, str]] = []
+    for raw_side in raw_sides:
+        if not isinstance(raw_side, Mapping):
+            return False
+        long_flag = _coerce_long_flag(raw_side)
+        competitor = _competitor_name(raw_side)
+        if long_flag is None or not competitor:
+            return False
+        parsed.append((long_flag, normalize_market_text(competitor)))
+
+    return (
+        {long_flag for long_flag, _name in parsed} == {True, False}
+        and parsed[0][1] != parsed[1][1]
+    )
 
 
 def market_validation_text(market: Mapping[str, Any]) -> str:
@@ -187,7 +276,11 @@ def is_match_winner_moneyline(market: Mapping[str, Any]) -> bool:
 
     v2 = str(market.get("sportsMarketTypeV2") or "").strip().upper()
     if v2:
-        return v2 in {MONEYLINE_V2, "MONEYLINE"}
+        if v2 in {MONEYLINE_V2, "MONEYLINE"}:
+            return True
+        if v2 in UNSPECIFIED_V2 and has_binary_named_competitor_sides(market):
+            return True
+        return False
 
     legacy = normalize_market_text(market.get("sportsMarketType"))
     if legacy:
@@ -205,7 +298,13 @@ def is_match_winner_moneyline(market: Mapping[str, Any]) -> bool:
         # An explicit but unrecognized sports type is not safe enough to trade.
         return False
 
-    # Conservative fallback for older payloads that omit sports type fields.
+    # Current sports payloads sometimes omit both market-type fields and use a
+    # generic title. Two named competitors on opposite LONG/SHORT contracts are
+    # sufficient positive evidence after the non-moneyline checks above pass.
+    if has_binary_named_competitor_sides(market):
+        return True
+
+    # Conservative text fallback for older payloads that omit sports type fields.
     text = market_validation_text(market)
     return any(
         phrase in text
