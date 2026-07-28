@@ -68,6 +68,35 @@ class WorkerConfigTests(unittest.TestCase):
         self.assertTrue(config.save_all_scans)
         self.assertEqual(config.public_summary()["storage_mode"], "all_player_evaluations")
 
+    def test_legacy_bankroll_environment_value_cannot_override_locked_twenty_percent(self):
+        with patch.dict(
+            os.environ,
+            {
+                "API_TENNIS_KEY": "api-key",
+                "DRY_RUN": "true",
+                "EXECUTION_BANKROLL_PCT": "10",
+            },
+            clear=True,
+        ):
+            config = WorkerConfig.from_env()
+        self.assertEqual(config.execution_bankroll_pct, 20.0)
+        self.assertEqual(config.public_summary()["execution_bankroll_pct"], 20.0)
+
+    def test_legacy_maximum_order_environment_value_is_ignored(self):
+        with patch.dict(
+            os.environ,
+            {
+                "API_TENNIS_KEY": "api-key",
+                "DRY_RUN": "true",
+                "EXECUTION_MAX_ORDER_USD": "1",
+            },
+            clear=True,
+        ):
+            config = WorkerConfig.from_env()
+        self.assertFalse(hasattr(config, "execution_maximum_order_usd"))
+        self.assertIsNone(config.public_summary()["execution_maximum_order_usd"])
+        self.assertTrue(config.public_summary()["execution_same_market_upgrades"])
+
 
 class WorkerLogicTests(unittest.TestCase):
     def setUp(self):

@@ -5,6 +5,7 @@ from typing import Any, Mapping
 import pytest
 
 from scanner.discord_notifier import DiscordNotificationError, DiscordNotifier
+from scanner.execution import ExecutionResult
 from scanner.worker_runtime import CycleReport, RailwayShadowWorker, WorkerConfig
 
 
@@ -57,6 +58,8 @@ def sample_record(*, stake_pct: float = 5.0, eligible: bool = True) -> dict[str,
         "opponent_games_in_set": 4,
         "current_game_score": "30-0",
         "market_found": True,
+        "market_title": "A. Michelsen vs M. Lajal",
+        "sports_market_type_v2": "SPORTS_MARKET_TYPE_MONEYLINE",
         "market_price_cents": 98.0,
         "scanned_at": "2026-07-24T19:30:00-07:00",
     }
@@ -87,8 +90,63 @@ def test_discord_formats_basic_trade_alert() -> None:
     assert "Current set: 5-4" in message
     assert "Game: 30-0" in message
     assert "Stability: **86.86**" in message
-    assert "Live order size: **10% of authenticated balance**" in message
+    assert "Live order size: **20% of authenticated balance**" in message
+    assert "Contract: A. Michelsen vs M. Lajal" in message
+    assert "Type: SPORTS_MARKET_TYPE_MONEYLINE" in message
     assert "98.0¢" in message
+
+
+def test_discord_only_calls_a_verified_fill_success() -> None:
+    notifier = DiscordNotifier("https://discord.com/api/webhooks/123/token")
+    session = FakeSession()
+    notifier.session = session
+    result = ExecutionResult(
+        status="EXECUTED",
+        reason="Order fill confirmed.",
+        signal_key="signal",
+        player="A. Michelsen",
+        opponent="M. Lajal",
+        market_slug="moneyline-market",
+        market_side="Long / YES",
+        market_question="A. Michelsen vs M. Lajal",
+        market_type="SPORTS_MARKET_TYPE_MONEYLINE",
+        stake_amount=4.0,
+        account_balance=20.0,
+        player_price_cents=98.0,
+        order_id="order-1",
+        order_state="ORDER_STATE_FILLED",
+        filled_quantity=4.08,
+        recommendation_change="INITIAL",
+    )
+
+    notifier.send_execution_update(result)
+
+    content = session.calls[0]["json"]["content"]
+    assert "ORDER FILL CONFIRMED" in content
+    assert "ORDER PLACED" not in content
+    assert "Filled contracts: **4.08**" in content
+
+
+def test_discord_pending_order_is_not_labeled_placed() -> None:
+    notifier = DiscordNotifier("https://discord.com/api/webhooks/123/token")
+    session = FakeSession()
+    notifier.session = session
+    result = ExecutionResult(
+        status="PENDING",
+        reason="Order submitted; final fill status is not yet confirmed.",
+        signal_key="signal",
+        player="A. Michelsen",
+        opponent="M. Lajal",
+        order_id="pending-1",
+        order_state="ORDER_STATE_PENDING_NEW",
+    )
+
+    notifier.send_execution_update(result)
+
+    content = session.calls[0]["json"]["content"]
+    assert "STATUS UNCONFIRMED" in content
+    assert "ORDER PLACED" not in content
+    assert "ORDER FILL CONFIRMED" not in content
 
 
 def test_discord_post_uses_safe_plain_text_payload() -> None:

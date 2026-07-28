@@ -49,6 +49,8 @@ class FakeMarkets:
         slug: str = "aec-atp-hernandez-mejia-2026-07-25",
         title: str = "Alex Hernandez vs Nicolas Mejia",
         description: str = "Who will win?",
+        question: str | None = None,
+        sports_market_type_v2: str | None = "SPORTS_MARKET_TYPE_MONEYLINE",
         market_sides: list[dict[str, Any]] | None = None,
         nested_book: bool = True,
         wrapped_market: bool = True,
@@ -62,11 +64,14 @@ class FakeMarkets:
         market = {
             "slug": slug,
             "title": title,
+            "question": question or title,
             "description": description,
             "active": active,
             "closed": closed,
             "marketSides": sides,
         }
+        if sports_market_type_v2 is not None:
+            market["sportsMarketTypeV2"] = sports_market_type_v2
         self.market_payload = {"market": market} if wrapped_market else market
         market_data: dict[str, Any] = {
             "marketSlug": slug,
@@ -90,41 +95,69 @@ class FakeOrders:
         *,
         open_orders: list[dict[str, Any]] | None = None,
         rejected: bool = False,
+        create_response: dict[str, Any] | None = None,
+        retrieve_responses: list[dict[str, Any]] | None = None,
+        retrieve_error: Exception | None = None,
     ) -> None:
         self.open_orders = open_orders or []
         self.rejected = rejected
+        self.create_response = create_response
+        self.retrieve_responses = list(retrieve_responses or [])
+        self.retrieve_error = retrieve_error
         self.preview_calls: list[dict[str, Any]] = []
         self.create_calls: list[dict[str, Any]] = []
+        self.list_calls: list[dict[str, Any] | None] = []
+        self.retrieve_calls: list[str] = []
+        self.last_created: dict[str, Any] = {}
 
-    def list(self) -> dict[str, Any]:
+    def list(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.list_calls.append(params)
         return {"orders": self.open_orders}
 
     def preview(self, params: dict[str, Any]) -> dict[str, Any]:
         self.preview_calls.append(params)
-        return {"order": params["request"]}
+        request = params.get("request", params)
+        return {"order": request}
 
     def create(self, params: dict[str, Any]) -> dict[str, Any]:
         self.create_calls.append(params)
+        if self.create_response is not None:
+            self.last_created = self.create_response
+            return self.create_response
         if self.rejected:
-            return {
+            self.last_created = {
                 "id": "rejected-1",
                 "executions": [
                     {
                         "type": "EXECUTION_TYPE_REJECTED",
                         "orderRejectReason": "NO_LIQUIDITY",
-                        "order": {"state": "ORDER_STATE_REJECTED"},
+                        "order": {"id": "rejected-1", "state": "ORDER_STATE_REJECTED"},
                     }
                 ],
             }
-        return {
+            return self.last_created
+        self.last_created = {
             "id": "order-1",
             "executions": [
                 {
                     "type": "EXECUTION_TYPE_FILL",
-                    "order": {"state": "ORDER_STATE_FILLED"},
+                    "order": {
+                        "id": "order-1",
+                        "state": "ORDER_STATE_FILLED",
+                        "cumQuantity": "2.35",
+                    },
                 }
             ],
         }
+        return self.last_created
+
+    def retrieve(self, order_id: str) -> dict[str, Any]:
+        self.retrieve_calls.append(order_id)
+        if self.retrieve_error is not None:
+            raise self.retrieve_error
+        if self.retrieve_responses:
+            return self.retrieve_responses.pop(0)
+        return self.last_created
 
 
 class FakeClient:
@@ -150,9 +183,8 @@ def config(**changes: Any) -> ExecutionConfig:
     values = {
         "key_id": "key-id",
         "secret_key": "secret-key",
-        "bankroll_pct": 10.0,
+        "bankroll_pct": 20.0,
         "minimum_order_usd": 0.50,
-        "maximum_order_usd": 25.0,
         "minimum_price_cents": 50.0,
         "maximum_price_cents": 99.0,
         "slippage_ticks": 1,
@@ -180,21 +212,23 @@ def record(
         "market_slug": slug,
         "market_side": side,
         "market_match_confidence": 95.0,
+        "recommendation_change": "INITIAL",
+        "stake_pct": 5.0,
     }
 
 
-def test_live_long_order_uses_documented_nested_book_and_ten_percent_cash() -> None:
+def test_live_long_order_uses_documented_nested_book_and_twenty_percent_cash() -> None:
     client = FakeClient()
     engine = PolymarketExecutionEngine(config(), client=client)
 
     result = engine.execute_trade(record())
 
     assert result.status == "EXECUTED"
-    assert result.stake_amount == 0.80
+    assert result.stake_amount == 1.60
     assert result.player_price_cents == 68.0
     assert result.market_side == LONG_SIDE
     request = client.orders.create_calls[0]
-    assert request["cashOrderQty"]["value"] == "0.80"
+    assert request["cashOrderQty"]["value"] == "1.60"
     assert request["intent"] == "ORDER_INTENT_BUY_LONG"
     assert request["manualOrderIndicator"] == "MANUAL_ORDER_INDICATOR_AUTOMATIC"
     assert request["tif"] == "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL"
@@ -249,6 +283,66 @@ def test_generic_title_validates_from_monteiro_and_mazza_market_sides() -> None:
     assert result.status == "EXECUTED"
     assert result.market_side == LONG_SIDE
     assert result.player_price_cents == 99.0
+
+
+def test_authenticated_side_mapping_accepts_boolean_strings_and_reversed_names() -> None:
+    slug = "aec-atp-tab-gri-2026-07-28"
+    markets = FakeMarkets(
+        slug=slug,
+        title="ATP tennis match winner",
+        market_sides=[
+            {"long": "true", "team": {"name": "Tabilo, Alejandro"}},
+            {"long": "false", "team": {"name": "Griekspoor, Tallon"}},
+        ],
+    )
+    client = FakeClient(markets=markets)
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(
+        record(side=None, player="A. Tabilo", opponent="T. Griekspoor", slug=slug)
+    )
+
+    assert result.status == "EXECUTED"
+    assert result.market_side == LONG_SIDE
+
+
+def test_authenticated_side_mapping_accepts_yes_no_outcome_flags() -> None:
+    slug = "aec-atp-tab-gri-2026-07-28"
+    markets = FakeMarkets(
+        slug=slug,
+        title="ATP tennis match winner",
+        market_sides=[
+            {"outcome": "YES", "team": {"name": "Alejandro Tabilo"}},
+            {"outcome": "NO", "team": {"name": "Tallon Griekspoor"}},
+        ],
+    )
+    client = FakeClient(markets=markets)
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(
+        record(side=None, player="A. Tabilo", opponent="T. Griekspoor", slug=slug)
+    )
+
+    assert result.status == "EXECUTED"
+    assert result.market_side == LONG_SIDE
+
+
+def test_authenticated_side_mapping_rejects_stale_discovery_side_without_live_assignment() -> None:
+    markets = FakeMarkets(
+        title="Alex Hernandez vs Nicolas Mejia",
+        market_sides=[
+            {"name": "YES"},
+            {"name": "NO"},
+        ],
+    )
+    client = FakeClient(markets=markets)
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(record(side=LONG_SIDE))
+
+    assert result.status == "REJECTED"
+    assert result.reason == "Backed player could not be mapped safely to YES or NO."
+    assert client.orders.create_calls == []
 
 
 def test_live_market_overwrites_wrong_discovery_side_with_short_side() -> None:
@@ -393,7 +487,7 @@ def test_missing_book_state_is_not_mislabeled_as_suspended() -> None:
     assert client.orders.preview_calls == []
 
 
-def test_open_position_blocks_new_order() -> None:
+def test_unrelated_open_position_does_not_block_new_market() -> None:
     client = FakeClient(
         portfolio=FakePortfolio(
             {
@@ -408,21 +502,106 @@ def test_open_position_blocks_new_order() -> None:
 
     result = engine.execute_trade(record())
 
+    assert result.status == "EXECUTED"
+    assert client.orders.create_calls
+
+
+def test_same_market_position_blocks_duplicate_order() -> None:
+    slug = "aec-atp-hernandez-mejia-2026-07-25"
+    client = FakeClient(
+        portfolio=FakePortfolio(
+            {slug: {"netPosition": "1.5", "expired": False}}
+        )
+    )
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(record(slug=slug))
+
     assert result.status == "REJECTED"
-    assert "position is already open" in result.reason
+    assert "same Polymarket market" in result.reason
     assert client.orders.create_calls == []
 
 
-def test_open_order_blocks_new_order() -> None:
-    orders = FakeOrders(open_orders=[{"id": "existing"}])
+def test_same_market_position_allows_scanner_approved_upgrade() -> None:
+    slug = "aec-atp-hernandez-mejia-2026-07-25"
+    client = FakeClient(
+        portfolio=FakePortfolio(
+            {slug: {"netPosition": "1.5", "expired": False}}
+        )
+    )
+    engine = PolymarketExecutionEngine(config(), client=client)
+    payload = record(slug=slug)
+    payload["recommendation_change"] = "UPGRADE"
+    payload["stake_pct"] = 7.0
+
+    result = engine.execute_trade(payload)
+
+    assert result.status == "EXECUTED"
+    assert result.recommendation_change == "UPGRADE"
+    assert client.orders.create_calls
+
+
+def test_unrelated_open_order_does_not_block_new_market() -> None:
+    orders = FakeOrders(
+        open_orders=[{"id": "existing", "marketSlug": "other-market"}]
+    )
     client = FakeClient(orders=orders)
     engine = PolymarketExecutionEngine(config(), client=client)
 
     result = engine.execute_trade(record())
 
+    assert result.status == "EXECUTED"
+    assert orders.create_calls
+    assert orders.list_calls == [
+        {"slugs": ["aec-atp-hernandez-mejia-2026-07-25"]}
+    ]
+
+
+def test_same_market_open_order_blocks_duplicate_order() -> None:
+    slug = "aec-atp-hernandez-mejia-2026-07-25"
+    orders = FakeOrders(open_orders=[{"id": "existing", "marketSlug": slug}])
+    client = FakeClient(orders=orders)
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(record(slug=slug))
+
     assert result.status == "REJECTED"
-    assert "order is already open" in result.reason
+    assert "same Polymarket market" in result.reason
     assert orders.create_calls == []
+
+
+def test_authenticated_exact_score_market_is_rejected_before_preview() -> None:
+    slug = "astatc-atp-matarn-lormus-2026-07-27-es-0-2"
+    markets = FakeMarkets(
+        slug=slug,
+        title="Matteo Arnaldi vs Lorenzo Musetti",
+        question="Musetti wins 2-0",
+        sports_market_type_v2="SPORTS_MARKET_TYPE_PROP",
+        market_sides=[
+            {"long": True, "team": {"name": "Lorenzo Musetti"}},
+            {"long": False, "team": {"name": "Matteo Arnaldi"}},
+        ],
+    )
+    client = FakeClient(markets=markets)
+    engine = PolymarketExecutionEngine(config(), client=client)
+
+    result = engine.execute_trade(
+        record(
+            side=LONG_SIDE,
+            player="L. Musetti",
+            opponent="M. Arnaldi",
+            slug=slug,
+        )
+    )
+
+    assert result.status == "REJECTED"
+    assert result.reason == (
+        "Authenticated Polymarket market is not the match-winner moneyline."
+    )
+    assert result.market_question == "Musetti wins 2-0"
+    assert result.market_type == "SPORTS_MARKET_TYPE_PROP"
+    assert client.orders.preview_calls == []
+    assert client.orders.create_calls == []
 
 
 def test_price_below_sanity_floor_is_rejected() -> None:
@@ -436,16 +615,15 @@ def test_price_below_sanity_floor_is_rejected() -> None:
     assert client.orders.create_calls == []
 
 
-def test_order_cap_rejects_instead_of_silently_reducing_ten_percent() -> None:
+def test_twenty_percent_has_no_fixed_dollar_cap() -> None:
     client = FakeClient(account=FakeAccount(balance=500.0, buying_power=500.0))
-    engine = PolymarketExecutionEngine(config(maximum_order_usd=25.0), client=client)
+    engine = PolymarketExecutionEngine(config(), client=client)
 
     result = engine.execute_trade(record())
 
-    assert result.status == "REJECTED"
-    assert result.stake_amount == 50.0
-    assert "exceeds the configured order cap" in result.reason
-    assert client.orders.create_calls == []
+    assert result.status == "EXECUTED"
+    assert result.stake_amount == 100.0
+    assert client.orders.create_calls[0]["cashOrderQty"]["value"] == "100.00"
 
 
 def test_exchange_rejection_is_not_reported_as_filled() -> None:
@@ -457,6 +635,88 @@ def test_exchange_rejection_is_not_reported_as_filled() -> None:
     assert result.status == "REJECTED"
     assert result.order_id == "rejected-1"
     assert result.reason == "NO_LIQUIDITY"
+
+
+def test_bare_order_id_is_pending_not_reported_as_filled() -> None:
+    orders = FakeOrders(
+        create_response={"id": "pending-1"},
+        retrieve_responses=[
+            {"id": "pending-1", "state": "ORDER_STATE_PENDING_NEW"},
+            {"id": "pending-1", "state": "ORDER_STATE_PENDING_NEW"},
+            {"id": "pending-1", "state": "ORDER_STATE_PENDING_NEW"},
+        ],
+    )
+    result = PolymarketExecutionEngine(config(), client=FakeClient(orders=orders)).execute_trade(record())
+
+    assert result.status == "PENDING"
+    assert not result.order_created
+    assert result.order_id == "pending-1"
+    assert result.order_state == "ORDER_STATE_PENDING_NEW"
+
+
+def test_retrieved_rejection_overrides_bare_create_id() -> None:
+    orders = FakeOrders(
+        create_response={"id": "reject-later"},
+        retrieve_responses=[
+            {
+                "id": "reject-later",
+                "state": "ORDER_STATE_REJECTED",
+                "rejectReason": "NO_LIQUIDITY",
+            }
+        ],
+    )
+    result = PolymarketExecutionEngine(config(), client=FakeClient(orders=orders)).execute_trade(record())
+
+    assert result.status == "REJECTED"
+    assert result.reason == "NO_LIQUIDITY"
+    assert not result.order_created
+
+
+def test_retrieved_fill_confirms_order() -> None:
+    orders = FakeOrders(
+        create_response={"id": "fill-later"},
+        retrieve_responses=[
+            {
+                "id": "fill-later",
+                "state": "ORDER_STATE_FILLED",
+                "cumQuantity": "1.75",
+            }
+        ],
+    )
+    result = PolymarketExecutionEngine(config(), client=FakeClient(orders=orders)).execute_trade(record())
+
+    assert result.status == "EXECUTED"
+    assert result.order_created
+    assert result.filled_quantity == 1.75
+
+
+def test_retrieve_failure_does_not_turn_bare_id_into_success() -> None:
+    orders = FakeOrders(
+        create_response={"id": "unknown-1"},
+        retrieve_error=RuntimeError("temporary status endpoint failure"),
+    )
+    result = PolymarketExecutionEngine(config(), client=FakeClient(orders=orders)).execute_trade(record())
+
+    assert result.status == "PENDING"
+    assert not result.order_created
+    assert "could not be confirmed" in result.reason
+
+
+def test_execution_signal_key_allows_distinct_upgrade_tiers() -> None:
+    initial = record()
+    upgrade = dict(initial)
+    upgrade["recommendation_change"] = "UPGRADE"
+    upgrade["stake_pct"] = 7.0
+    later_upgrade = dict(upgrade)
+    later_upgrade["stake_pct"] = 9.0
+
+    initial_key = PolymarketExecutionEngine.signal_key(initial)
+    upgrade_key = PolymarketExecutionEngine.signal_key(upgrade)
+    later_upgrade_key = PolymarketExecutionEngine.signal_key(later_upgrade)
+
+    assert initial_key != upgrade_key
+    assert upgrade_key != later_upgrade_key
+    assert upgrade_key == PolymarketExecutionEngine.signal_key(dict(upgrade))
 
 
 class FakeExecutionEngine:
@@ -477,9 +737,12 @@ class FakeExecutionEngine:
             opponent=str(payload["opponent"]),
             market_slug=str(payload["market_slug"]),
             market_side=str(payload["market_side"]),
+            market_question="Alex Hernandez vs Nicolas Mejia",
+            market_type="SPORTS_MARKET_TYPE_MONEYLINE",
+            bankroll_pct=20.0,
             account_balance=8.0,
             buying_power=8.0,
-            stake_amount=0.80,
+            stake_amount=1.60,
             player_price_cents=68.0,
             order_id="order-1",
             order_state="ORDER_STATE_FILLED",

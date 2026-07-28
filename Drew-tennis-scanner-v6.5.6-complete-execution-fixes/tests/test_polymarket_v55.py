@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from scanner.polymarket import (
+    _build_match_row,
     _flatten_events,
     extract_bbo_prices,
     infer_player_market_side,
@@ -97,6 +98,138 @@ class MarketLookupTests(unittest.TestCase):
             infer_player_market_side(market, "E. Winter", "S. Kwon"),
             "Short / NO",
         )
+
+
+    def test_exact_score_prop_cannot_outrank_match_winner_moneyline(self):
+        event = {
+            "id": "arnaldi-musetti",
+            "title": "Matteo Arnaldi vs Lorenzo Musetti",
+            "teams": [
+                {"name": "Matteo Arnaldi"},
+                {"name": "Lorenzo Musetti"},
+            ],
+            "markets": [
+                {
+                    "id": "exact",
+                    "slug": "astatc-atp-matarn-lormus-2026-07-27-es-0-2",
+                    "question": "Musetti wins 2-0",
+                    "sportsMarketTypeV2": "SPORTS_MARKET_TYPE_PROP",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {"long": True, "team": {"name": "Lorenzo Musetti"}},
+                        {"long": False, "team": {"name": "Matteo Arnaldi"}},
+                    ],
+                },
+                {
+                    "id": "moneyline",
+                    "slug": "aec-atp-matarn-lormus-2026-07-27",
+                    "question": "Matteo Arnaldi vs Lorenzo Musetti",
+                    "sportsMarketTypeV2": "SPORTS_MARKET_TYPE_MONEYLINE",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {"long": True, "team": {"name": "Matteo Arnaldi"}},
+                        {"long": False, "team": {"name": "Lorenzo Musetti"}},
+                    ],
+                },
+            ],
+        }
+
+        selected = _build_match_row(event)
+
+        self.assertEqual(selected["market_id"], "moneyline")
+        self.assertEqual(
+            selected["market_type"], "SPORTS_MARKET_TYPE_MONEYLINE"
+        )
+        self.assertTrue(selected["match_winner_market"])
+
+    def test_exact_score_text_is_rejected_even_with_wrong_moneyline_type(self):
+        event = {
+            "id": "bad-type-exact-score",
+            "title": "Matteo Arnaldi vs Lorenzo Musetti",
+            "teams": [
+                {"name": "Matteo Arnaldi"},
+                {"name": "Lorenzo Musetti"},
+            ],
+            "markets": [
+                {
+                    "id": "bad-type",
+                    "slug": "musetti-special",
+                    "question": "Lorenzo Musetti 2-0",
+                    "sportsMarketTypeV2": "SPORTS_MARKET_TYPE_MONEYLINE",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {"long": True, "team": {"name": "Lorenzo Musetti"}},
+                        {"long": False, "team": {"name": "Matteo Arnaldi"}},
+                    ],
+                }
+            ],
+        }
+
+        selected = _build_match_row(event)
+
+        self.assertFalse(selected["match_winner_market"])
+        self.assertIsNone(selected["market_id"])
+
+    def test_sets_to_zero_wording_is_rejected_without_market_type(self):
+        event = {
+            "id": "worded-exact-score",
+            "title": "Matteo Arnaldi vs Lorenzo Musetti",
+            "teams": [
+                {"name": "Matteo Arnaldi"},
+                {"name": "Lorenzo Musetti"},
+            ],
+            "markets": [
+                {
+                    "id": "worded-prop",
+                    "slug": "musetti-win-two-sets",
+                    "question": "Will Musetti win 2 sets to 0?",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {"long": True, "team": {"name": "Lorenzo Musetti"}},
+                        {"long": False, "team": {"name": "Matteo Arnaldi"}},
+                    ],
+                }
+            ],
+        }
+
+        selected = _build_match_row(event)
+
+        self.assertFalse(selected["match_winner_market"])
+        self.assertIsNone(selected["market_id"])
+
+    def test_exact_score_only_event_has_no_safe_match_winner_market(self):
+        event = {
+            "id": "exact-only",
+            "title": "Matteo Arnaldi vs Lorenzo Musetti",
+            "teams": [
+                {"name": "Matteo Arnaldi"},
+                {"name": "Lorenzo Musetti"},
+            ],
+            "markets": [
+                {
+                    "id": "exact",
+                    "slug": "astatc-atp-matarn-lormus-2026-07-27-es-0-2",
+                    "question": "Musetti wins 2-0",
+                    "sportsMarketTypeV2": "SPORTS_MARKET_TYPE_PROP",
+                    "active": True,
+                    "closed": False,
+                    "marketSides": [
+                        {"long": True, "team": {"name": "Lorenzo Musetti"}},
+                        {"long": False, "team": {"name": "Matteo Arnaldi"}},
+                    ],
+                }
+            ],
+        }
+
+        selected = _build_match_row(event)
+
+        self.assertFalse(selected["match_winner_market"])
+        self.assertIsNone(selected["market_id"])
+        self.assertFalse(selected["market_slug"])
 
     @patch("scanner.polymarket._paginate_events")
     @patch("scanner.polymarket.search_us_markets")

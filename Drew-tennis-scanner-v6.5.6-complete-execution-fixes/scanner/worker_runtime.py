@@ -30,6 +30,7 @@ from .supabase_store import InsertResult, SupabaseStore
 
 TRUE_VALUES = {"1", "true", "yes", "on", "y"}
 FALSE_VALUES = {"0", "false", "no", "off", "n"}
+LOCKED_EXECUTION_BANKROLL_PCT = 20.0
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -95,9 +96,8 @@ class WorkerConfig:
     polymarket_execution_enabled: bool = False
     polymarket_key_id: str = ""
     polymarket_secret_key: str = ""
-    execution_bankroll_pct: float = 10.0
+    execution_bankroll_pct: float = LOCKED_EXECUTION_BANKROLL_PCT
     execution_minimum_order_usd: float = 0.50
-    execution_maximum_order_usd: float = 25.0
     execution_minimum_price_cents: float = 50.0
     execution_maximum_price_cents: float = 99.0
     execution_slippage_ticks: int = 1
@@ -150,14 +150,11 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            execution_bankroll_pct=_env_float(
-                "EXECUTION_BANKROLL_PCT", 10.0, 0.1, 25.0
-            ),
+            # Version 6.5.6 locks live sizing at 20%. Any legacy Railway
+            # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
+            execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(
                 "EXECUTION_MIN_ORDER_USD", 0.50, 0.01, 1000.0
-            ),
-            execution_maximum_order_usd=_env_float(
-                "EXECUTION_MAX_ORDER_USD", 25.0, 0.01, 1_000_000.0
             ),
             execution_minimum_price_cents=_env_float(
                 "EXECUTION_MIN_PRICE_CENTS", 50.0, 1.0, 99.0
@@ -194,10 +191,6 @@ class WorkerConfig:
                 raise ValueError(
                     "POLYMARKET_SECRET_KEY is required when POLYMARKET_EXECUTION_ENABLED=true."
                 )
-            if self.execution_minimum_order_usd > self.execution_maximum_order_usd:
-                raise ValueError(
-                    "EXECUTION_MIN_ORDER_USD cannot exceed EXECUTION_MAX_ORDER_USD."
-                )
             if self.execution_minimum_price_cents > self.execution_maximum_price_cents:
                 raise ValueError(
                     "EXECUTION_MIN_PRICE_CENTS cannot exceed EXECUTION_MAX_PRICE_CENTS."
@@ -232,13 +225,15 @@ class WorkerConfig:
             ),
             "execution_bankroll_pct": self.execution_bankroll_pct,
             "execution_minimum_order_usd": self.execution_minimum_order_usd,
-            "execution_maximum_order_usd": self.execution_maximum_order_usd,
+            "execution_maximum_order_usd": None,
             "execution_price_range_cents": [
                 self.execution_minimum_price_cents,
                 self.execution_maximum_price_cents,
             ],
             "execution_slippage_ticks": self.execution_slippage_ticks,
-            "execution_maximum_open_positions": 1,
+            "execution_maximum_open_positions": None,
+            "execution_concurrent_markets": "unlimited distinct markets",
+            "execution_same_market_upgrades": True,
             "storage_mode": "all_player_evaluations" if self.save_all_scans else "qualified_trades_only",
             "stores_only_qualified_trades": not self.save_all_scans,
             "dry_run": self.dry_run,
@@ -276,6 +271,7 @@ class CycleReport:
     execution_attempts: int = 0
     execution_orders: int = 0
     execution_rejections: int = 0
+    execution_pending: int = 0
     execution_errors: int = 0
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
@@ -299,6 +295,7 @@ class CycleReport:
             "execution_attempts": self.execution_attempts,
             "execution_orders": self.execution_orders,
             "execution_rejections": self.execution_rejections,
+            "execution_pending": self.execution_pending,
             "execution_errors": self.execution_errors,
             "decision_counts": dict(self.decision_counts),
             "snapshot": dict(self.snapshot_summary),
@@ -363,7 +360,6 @@ class RailwayShadowWorker:
                     secret_key=config.polymarket_secret_key,
                     bankroll_pct=config.execution_bankroll_pct,
                     minimum_order_usd=config.execution_minimum_order_usd,
-                    maximum_order_usd=config.execution_maximum_order_usd,
                     minimum_price_cents=config.execution_minimum_price_cents,
                     maximum_price_cents=config.execution_maximum_price_cents,
                     slippage_ticks=config.execution_slippage_ticks,
@@ -568,23 +564,29 @@ class RailwayShadowWorker:
         if market_row:
             try:
                 market_row = enrich_market_row(market_row, include_bbo=True)
-                bbo_prices = extract_bbo_prices(market_row.get("bbo_payload") or {})
-                inferred = infer_player_prices(
-                    market_row,
-                    player1,
-                    player2,
-                    bbo_prices,
-                    metadata_price=extract_display_price(market_row),
-                )
-                prices = dict(inferred.get("prices") or {})
-                sides = dict(inferred.get("sides") or sides)
-                market_timestamp = str(market_row.get("market_data_timestamp") or "") or None
-                market_volume = market_row.get("volume")
-                market_liquidity = market_row.get("liquidity")
-                if not inferred.get("complete"):
+                if not market_row.get("match_winner_market"):
                     market_errors.append(
-                        "Polymarket was matched, but player-side prices could not be safely inferred for both players."
+                        "Polymarket candidate was rejected after live metadata showed it was not the match-winner moneyline."
                     )
+                    market_row = None
+                else:
+                    bbo_prices = extract_bbo_prices(market_row.get("bbo_payload") or {})
+                    inferred = infer_player_prices(
+                        market_row,
+                        player1,
+                        player2,
+                        bbo_prices,
+                        metadata_price=extract_display_price(market_row),
+                    )
+                    prices = dict(inferred.get("prices") or {})
+                    sides = dict(inferred.get("sides") or sides)
+                    market_timestamp = str(market_row.get("market_data_timestamp") or "") or None
+                    market_volume = market_row.get("volume")
+                    market_liquidity = market_row.get("liquidity")
+                    if not inferred.get("complete"):
+                        market_errors.append(
+                            "Polymarket was matched, but player-side prices could not be safely inferred for both players."
+                        )
             except Exception as exc:
                 market_errors.append(f"Polymarket pricing error: {exc}")
 
@@ -724,6 +726,8 @@ class RailwayShadowWorker:
             "event_slug": market_row.get("event_slug"),
             "match_winner_score": market_row.get("match_winner_score"),
             "market_confidence": market_row.get("market_confidence"),
+            "market_type": market_row.get("market_type"),
+            "sports_market_type_v2": market_row.get("sports_market_type_v2"),
             "pair_similarity": market_row.get("api_pair_similarity"),
             "tournament_similarity": market_row.get("api_tournament_similarity"),
             "active": market_row.get("active"),
@@ -789,6 +793,8 @@ class RailwayShadowWorker:
             "market_id": market_row.get("market_id"),
             "market_slug": market_row.get("market_slug"),
             "market_title": market_row.get("market_title"),
+            "market_type": market_row.get("market_type"),
+            "sports_market_type_v2": market_row.get("sports_market_type_v2"),
             "market_lookup_source": market_row.get("lookup_source"),
             "market_match_confidence": market_row.get("api_match_confidence"),
             "market_side": market_side,
@@ -965,13 +971,20 @@ class RailwayShadowWorker:
 
             if result.order_created:
                 report.execution_orders += 1
-                log_json("polymarket_order_created", **result.log_fields())
-            elif result.status == "REJECTED":
+                log_json("polymarket_order_filled", **result.log_fields())
+            elif result.status in {"REJECTED", "UNFILLED"}:
                 report.execution_rejections += 1
-                log_json("polymarket_order_rejected", **result.log_fields())
+                log_json("polymarket_order_not_filled", **result.log_fields())
+            elif result.status == "PENDING":
+                report.execution_pending += 1
+                warning = result.reason
+                if warning not in report.warnings:
+                    report.warnings.append(warning)
+                log_json("polymarket_order_pending", **result.log_fields())
             else:
                 report.execution_errors += 1
-                report.warnings.append(result.reason)
+                if result.reason not in report.warnings:
+                    report.warnings.append(result.reason)
                 log_json("polymarket_order_failed", **result.log_fields())
 
             if self.discord_notifier is not None:

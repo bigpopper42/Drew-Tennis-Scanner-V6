@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.4-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.6-Railway",
             }
         )
         return session
@@ -85,10 +85,14 @@ class DiscordNotifier:
         self._post(self.format_trade_alert(record))
 
     def send_execution_update(self, result: ExecutionResult) -> None:
-        if result.order_created:
-            heading = "✅ **POLYMARKET ORDER PLACED**"
+        if result.status == "EXECUTED":
+            heading = "✅ **POLYMARKET ORDER FILL CONFIRMED**"
+        elif result.status == "PENDING":
+            heading = "⏳ **POLYMARKET ORDER STATUS UNCONFIRMED**"
+        elif result.status == "UNFILLED":
+            heading = "🛑 **POLYMARKET ORDER NOT FILLED**"
         elif result.status == "REJECTED":
-            heading = "🛑 **POLYMARKET ORDER BLOCKED**"
+            heading = "🛑 **POLYMARKET ORDER REJECTED**"
         else:
             heading = "⚠️ **POLYMARKET EXECUTION ERROR**"
         details = [
@@ -99,14 +103,25 @@ class DiscordNotifier:
         ]
         if result.market_slug:
             details.append(f"Market: `{result.market_slug}` · {result.market_side}")
+        if result.market_question:
+            details.append(f"Contract: **{result.market_question}**")
+        if result.market_type:
+            details.append(f"Market type: `{result.market_type}`")
         if result.stake_amount:
             details.append(
                 f"Stake: **${result.stake_amount:.2f}** · "
                 f"Price: **{result.player_price_cents:.1f}¢**"
             )
             details.append(
-                f"Sizing: 10% of ${result.account_balance:.2f} account balance"
+                f"Sizing: {result.bankroll_pct:g}% of "
+                f"${result.account_balance:.2f} account balance"
             )
+        if result.recommendation_change:
+            details.append(f"Signal: **{result.recommendation_change}**")
+        if result.filled_quantity:
+            details.append(f"Filled contracts: **{result.filled_quantity:g}**")
+        if result.order_state:
+            details.append(f"Order state: `{result.order_state}`")
         if result.order_id:
             details.append(f"Order ID: `{result.order_id}`")
         self._post("\n".join(details))
@@ -155,7 +170,7 @@ class DiscordNotifier:
             f"✅ Break lead: {break_lead} · Serving: {serving}\n"
             f"🏁 Serving for match: {serving_for_match}\n"
             f"💪 Service points won: {service_pct}\n"
-            "💰 Live order size: **10% of authenticated balance**\n"
+            "💰 Live order size: **20% of authenticated balance**\n"
             f"🔎 {market}\n"
             f"🕒 {time_label}"
         )
@@ -213,7 +228,20 @@ class DiscordNotifier:
             price = float(record.get("market_price_cents") or 0.0)
         except (TypeError, ValueError):
             price = 0.0
-        return f"Polymarket market matched · {price:.1f}¢" if price > 0 else "Polymarket market matched"
+        title = str(record.get("market_title") or "").strip()
+        market_type = str(
+            record.get("sports_market_type_v2")
+            or record.get("market_type")
+            or ""
+        ).strip()
+        pieces = ["Polymarket market matched"]
+        if title:
+            pieces.append(f"Contract: {title}")
+        if market_type:
+            pieces.append(f"Type: {market_type}")
+        if price > 0:
+            pieces.append(f"{price:.1f}¢")
+        return " · ".join(pieces)
 
     def _time_label(self, scanned_at: Any) -> str:
         raw = str(scanned_at or "").strip()

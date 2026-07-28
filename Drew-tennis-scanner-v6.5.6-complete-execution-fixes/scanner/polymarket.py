@@ -20,6 +20,12 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .market_validation import (
+    is_match_winner_moneyline,
+    market_question,
+    sports_market_type,
+)
+
 US_BASE = "https://gateway.polymarket.us"
 DEFAULT_TIMEOUT = (5, 20)
 
@@ -46,7 +52,7 @@ def _http_session() -> requests.Session:
         allowed_methods=frozenset({"GET"}), raise_on_status=False,
     )
     session.mount("https://", HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8))
-    session.headers.update({"Accept": "application/json", "User-Agent": "DrewTennisScanner/6.5.4"})
+    session.headers.update({"Accept": "application/json", "User-Agent": "DrewTennisScanner/6.5.6"})
     return session
 
 
@@ -275,16 +281,16 @@ def _extract_participant_names(event: Dict[str, Any]) -> List[str]:
 
 def _market_text(market: Dict[str, Any]) -> str:
     outcomes = _market_sides(market)
-    outcome_text = " ".join(
-        _side_name(side)
-        for side in outcomes
-    )
+    outcome_text = " ".join(_side_name(side) for side in outcomes)
     return normalize_name(
         " ".join(
             [
                 str(market.get("question") or ""),
                 str(market.get("title") or ""),
+                str(market.get("description") or ""),
                 str(market.get("slug") or ""),
+                str(market.get("sportsMarketTypeV2") or ""),
+                str(market.get("sportsMarketType") or ""),
                 str(market.get("marketType") or market.get("type") or ""),
                 outcome_text,
             ]
@@ -293,15 +299,32 @@ def _market_text(market: Dict[str, Any]) -> str:
 
 
 def _match_winner_score(market: Dict[str, Any], players: Sequence[str]) -> int:
+    # A player-name match alone is never enough. The market must first pass the
+    # shared moneyline validator so exact-score props such as `-es-0-2` cannot
+    # outrank the ordinary match-winner contract.
+    if not is_match_winner_moneyline(market):
+        return -1000
+
     text = _market_text(market)
-    market_type = normalize_name(str(market.get("marketType") or market.get("type") or ""))
-    score = 0
-    if market_type in {"moneyline", "money line", "match winner", "winner", "win"}:
+    score = 20
+    v2 = str(market.get("sportsMarketTypeV2") or "").strip().upper()
+    if v2 in {"SPORTS_MARKET_TYPE_MONEYLINE", "MONEYLINE"}:
+        score += 20
+    legacy_type = normalize_name(str(market.get("sportsMarketType") or ""))
+    if "match winner" in legacy_type or "moneyline" in legacy_type:
         score += 12
-    if any(phrase in text for phrase in ("match winner", "to win match", "will win", "moneyline", "money line")):
+    if any(
+        phrase in text
+        for phrase in (
+            "match winner",
+            "to win the match",
+            "to win match",
+            "will win the match",
+            "moneyline",
+            "money line",
+        )
+    ):
         score += 10
-    if "winner" in text or " win " in f" {text} ":
-        score += 4
 
     normalized_players = [normalize_name(player) for player in players if player]
     surname_hits = 0
@@ -313,25 +336,6 @@ def _match_winner_score(market: Dict[str, Any], players: Sequence[str]) -> int:
         if surname and surname in text:
             surname_hits += 1
     score += full_hits * 5 + surname_hits * 2
-
-    # Exclude common non-moneyline tennis markets.
-    exclusions = (
-        "set winner",
-        "game winner",
-        "first set",
-        "second set",
-        "third set",
-        "total games",
-        "over ",
-        "under ",
-        "spread",
-        "handicap",
-        "exact score",
-        "tiebreak",
-        "tie break",
-    )
-    if any(term in text for term in exclusions):
-        score -= 30
     return score
 
 
@@ -366,9 +370,10 @@ def _build_match_row(event: Dict[str, Any]) -> Dict[str, Any]:
         "player2": players[1] if len(players) > 1 else "",
         "players_found": len(players) >= 2,
         "market_id": market.get("id"),
-        "market_title": market.get("question") or market.get("title") or event.get("title"),
-        "market_slug": market.get("slug") or event.get("slug"),
-        "market_type": market.get("marketType") or market.get("type"),
+        "market_title": (market_question(market) or event.get("title")) if market else None,
+        "market_slug": market.get("slug") if market else None,
+        "market_type": sports_market_type(market) if market else None,
+        "sports_market_type_v2": market.get("sportsMarketTypeV2") if market else None,
         "match_winner_market": bool(market),
         "match_winner_score": market_score,
         "market_confidence": round(min(100.0, max(0.0, 45.0 + market_score * 2.0)), 1) if market else 0.0,
@@ -578,24 +583,44 @@ def _candidate_identity(row: Dict[str, Any]) -> Tuple[Any, Any, Any]:
 
 
 def _player_match_score(expected: str, candidate: str) -> float:
-    """Initial/surname-aware similarity without requiring exact full names."""
+    """Initial, surname, multi-surname, and reversed-name similarity."""
     left, right = normalize_name(expected), normalize_name(candidate)
     if not left or not right:
         return 0.0
     if left == right:
         return 1.0
     left_tokens, right_tokens = left.split(), right.split()
-    left_last, right_last = left_tokens[-1], right_tokens[-1]
-    if left_last != right_last:
+    if len(left_tokens) == 1:
+        return 0.90 if left_tokens[0] in right_tokens else 0.0
+    if len(right_tokens) == 1:
+        return 0.90 if right_tokens[0] in left_tokens else 0.0
+
+    def ordered_score(first: List[str], second: List[str]) -> float:
+        first_surnames, second_surnames = first[1:], second[1:]
+        if first_surnames != second_surnames:
+            shorter, longer = (
+                (first_surnames, second_surnames)
+                if len(first_surnames) <= len(second_surnames)
+                else (second_surnames, first_surnames)
+            )
+            width = len(shorter)
+            if not width or not any(
+                longer[index : index + width] == shorter
+                for index in range(len(longer) - width + 1)
+            ):
+                return 0.0
+        if first[0] == second[0]:
+            return 0.99
+        if first[0][:1] == second[0][:1]:
+            return 0.96
         return 0.0
-    if len(left_tokens) == 1 or len(right_tokens) == 1:
-        return 0.86
-    left_first, right_first = left_tokens[0], right_tokens[0]
-    if left_first == right_first:
-        return 0.98
-    if left_first[:1] == right_first[:1]:
-        return 0.94
-    return 0.58
+
+    direct = ordered_score(left_tokens, right_tokens)
+    if direct:
+        return direct
+    reversed_right = [right_tokens[-1], *right_tokens[:-1]]
+    reversed_score = ordered_score(left_tokens, reversed_right)
+    return min(reversed_score, 0.95) if reversed_score else 0.0
 
 
 def _row_player_pair_score(row: Dict[str, Any], player1: str, player2: str) -> float:
@@ -889,8 +914,13 @@ def enrich_market_row(row: Dict[str, Any], *, include_bbo: bool = True) -> Dict[
     if details:
         enriched["market_details"] = details
         existing_market = enriched.get("raw_market") if isinstance(enriched.get("raw_market"), dict) else {}
-        enriched["raw_market"] = {**existing_market, **details}
-        enriched["sides"] = _market_sides(details) or enriched.get("sides") or []
+        merged_market = {**existing_market, **details}
+        enriched["raw_market"] = merged_market
+        enriched["sides"] = _market_sides(merged_market) or enriched.get("sides") or []
+        enriched["market_title"] = market_question(merged_market) or enriched.get("market_title")
+        enriched["market_type"] = sports_market_type(merged_market) or enriched.get("market_type")
+        enriched["sports_market_type_v2"] = merged_market.get("sportsMarketTypeV2") or enriched.get("sports_market_type_v2")
+        enriched["match_winner_market"] = is_match_winner_moneyline(merged_market)
     bbo_payload = get_bbo(slug) if include_bbo and slug else {}
     bbo = extract_bbo_prices(bbo_payload)
     metrics = extract_market_metrics(enriched)
@@ -909,6 +939,81 @@ def enrich_market_row(row: Dict[str, Any], *, include_bbo: bool = True) -> Dict[
         }
     )
     return enriched
+
+
+def _market_side_long_flag(side: Dict[str, Any]) -> Optional[bool]:
+    value = side.get("long")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    text = normalize_name(str(value or ""))
+    if text in {"true", "yes", "long", "buy long"}:
+        return True
+    if text in {"false", "no", "short", "buy short"}:
+        return False
+    for key in ("side", "position", "contractSide", "outcomeType", "outcome"):
+        text = normalize_name(str(side.get(key) or ""))
+        if text in {"long", "yes", "affirmative"}:
+            return True
+        if text in {"short", "no", "negative"}:
+            return False
+    return None
+
+
+def _market_side_labels(side: Dict[str, Any]) -> List[str]:
+    labels: List[str] = []
+    team = side.get("team")
+    sources = [team] if isinstance(team, dict) else []
+    sources.append(side)
+    for source in sources:
+        for key in (
+            "name", "displayName", "safeName", "alias", "abbreviation",
+            "title", "description", "identifier", "outcome", "label",
+        ):
+            value = str(source.get(key) or "").strip()
+            normalized = normalize_name(value)
+            if value and normalized not in {normalize_name(item) for item in labels}:
+                labels.append(value)
+    return labels
+
+
+def _structured_player_side(
+    sides: Sequence[Any], player: str, opponent: str
+) -> Optional[str]:
+    structured: List[Tuple[bool, List[str]]] = []
+    for side in sides:
+        if not isinstance(side, dict):
+            continue
+        long_flag = _market_side_long_flag(side)
+        labels = _market_side_labels(side)
+        if long_flag is None or not labels:
+            continue
+        structured.append((long_flag, labels))
+    if len(structured) != 2 or {item[0] for item in structured} != {True, False}:
+        return None
+
+    player_scores = [
+        max((_player_match_score(player, label) for label in labels), default=0.0)
+        for _long, labels in structured
+    ]
+    opponent_scores = [
+        max((_player_match_score(opponent, label) for label in labels), default=0.0)
+        for _long, labels in structured
+    ]
+    player_best = max(player_scores)
+    opponent_best = max(opponent_scores)
+    player_indexes = [i for i, score in enumerate(player_scores) if abs(score - player_best) < 1e-9]
+    opponent_indexes = [i for i, score in enumerate(opponent_scores) if abs(score - opponent_best) < 1e-9]
+    if (
+        player_best < 0.90
+        or opponent_best < 0.90
+        or len(player_indexes) != 1
+        or len(opponent_indexes) != 1
+        or player_indexes[0] == opponent_indexes[0]
+    ):
+        return None
+    return "Long / YES" if structured[player_indexes[0]][0] else "Short / NO"
 
 
 def infer_player_market_side(
@@ -930,31 +1035,11 @@ def infer_player_market_side(
     )
 
     # Current Polymarket US sports markets explicitly identify which player is
-    # long and short through marketSides[].team and marketSides[].long.
-    structured: List[Tuple[str, bool]] = []
-    for side in sides:
-        if not isinstance(side, dict) or not isinstance(side.get("long"), bool):
-            continue
-        label = _side_name(side)
-        if label:
-            structured.append((label, bool(side["long"])))
-    if len(structured) >= 2:
-        player_matches = [
-            (label, is_long, _player_match_score(player, label))
-            for label, is_long in structured
-        ]
-        opponent_matches = [
-            (label, is_long, _player_match_score(opponent, label))
-            for label, is_long in structured
-        ]
-        best_player = max(player_matches, key=lambda item: item[2])
-        best_opponent = max(opponent_matches, key=lambda item: item[2])
-        if (
-            best_player[2] >= 0.86
-            and best_opponent[2] >= 0.86
-            and best_player[0] != best_opponent[0]
-        ):
-            return "Long / YES" if best_player[1] else "Short / NO"
+    # long and short through marketSides. Require both players to map uniquely
+    # to opposite contracts; aliases and boolean-string flags are supported.
+    structured_side = _structured_player_side(sides, player, opponent)
+    if structured_side is not None:
+        return structured_side
 
     normalized_sides: List[str] = []
     for side in sides:
