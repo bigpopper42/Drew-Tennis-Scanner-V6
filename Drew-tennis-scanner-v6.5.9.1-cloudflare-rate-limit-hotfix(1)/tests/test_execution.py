@@ -348,6 +348,8 @@ def config(**changes: Any) -> ExecutionConfig:
         "event_page_size": 100,
         "event_page_limit": 2,
         "order_status_attempts": 2,
+        "api_min_interval_seconds": 0.0,
+        "rate_limit_backoff_seconds": 0.0,
         "minimum_market_confidence": 80.0,
     }
     values.update(changes)
@@ -1712,3 +1714,104 @@ def test_search_and_portfolio_queries_use_official_sdk_fields() -> None:
     assert all(set(call or {}).issubset(official_position_fields) for call in portfolio.calls)
     assert portfolio.activity_calls
     assert all(set(call or {}).issubset(official_activity_fields) for call in portfolio.activity_calls)
+
+
+def test_cloudflare_1015_open_order_lookup_retries_then_executes() -> None:
+    cloudflare_html = (
+        "<!doctype html><html><head><title>Access denied | api.polymarket.us "
+        "used Cloudflare to restrict access</title></head>"
+        "<body>Error 1015<script>errorCode: 1015</script></body></html>"
+    )
+
+    class Cloudflare403(RuntimeError):
+        status_code = 403
+
+    class FlakyOpenOrders(FakeOrders):
+        def list(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            self.list_calls.append(params)
+            if len(self.list_calls) < 3:
+                raise Cloudflare403(cloudflare_html)
+            return {"orders": []}
+
+    orders = FlakyOpenOrders()
+    result = engine(
+        FakeClient(orders=orders),
+        api_read_attempts=3,
+        api_min_interval_seconds=0.0,
+        rate_limit_backoff_seconds=0.0,
+    ).execute_trade(record())
+
+    assert result.status == "EXECUTED"
+    assert len(orders.list_calls) == 3
+    assert len(orders.create_calls) == 1
+
+
+def test_exhausted_cloudflare_1015_is_retryable_and_html_is_hidden() -> None:
+    cloudflare_html = (
+        "<!doctype html><html><title>Access denied | api.polymarket.us used "
+        "Cloudflare to restrict access</title><body>Error 1015</body></html>"
+    )
+
+    class Cloudflare403(RuntimeError):
+        status_code = 403
+
+    class BlockedOpenOrders(FakeOrders):
+        def list(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            self.list_calls.append(params)
+            raise Cloudflare403(cloudflare_html)
+
+    orders = BlockedOpenOrders()
+    result = engine(
+        FakeClient(orders=orders),
+        api_read_attempts=3,
+        api_min_interval_seconds=0.0,
+        rate_limit_backoff_seconds=0.0,
+    ).execute_trade(record())
+
+    assert result.status == "FAILED"
+    assert result.retryable is True
+    assert result.failure_stage == "idempotency"
+    assert len(orders.list_calls) == 3
+    assert orders.create_calls == []
+    assert "1015/429" in result.reason
+    assert "<!doctype" not in result.reason.casefold()
+    assert "<html" not in result.reason.casefold()
+
+
+def test_cloudflare_1015_order_create_retries_only_definite_edge_block() -> None:
+    class Cloudflare403(RuntimeError):
+        status_code = 403
+
+    class FlakyCreateOrders(FakeOrders):
+        def create(self, params: dict[str, Any]) -> dict[str, Any]:
+            self.create_calls.append(deepcopy(params))
+            if len(self.create_calls) == 1:
+                raise Cloudflare403(
+                    "<!doctype html><title>Access denied</title>"
+                    "Cloudflare to restrict access Error 1015"
+                )
+            return {
+                "id": "order-after-backoff",
+                "executions": [
+                    {
+                        "type": "EXECUTION_TYPE_FILL",
+                        "order": {
+                            "id": "order-after-backoff",
+                            "marketSlug": params["marketSlug"],
+                            "state": "ORDER_STATE_FILLED",
+                            "cumQuantity": "25.64",
+                        },
+                    }
+                ],
+            }
+
+    orders = FlakyCreateOrders()
+    result = engine(
+        FakeClient(orders=orders),
+        api_read_attempts=3,
+        api_min_interval_seconds=0.0,
+        rate_limit_backoff_seconds=0.0,
+    ).execute_trade(record())
+
+    assert result.status == "EXECUTED"
+    assert len(orders.create_calls) == 2

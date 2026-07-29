@@ -1,6 +1,6 @@
-# Drew Tennis Scanner Version 6.5.9
+# Drew Tennis Scanner Version 6.5.9.1
 
-Version 6.5.9 leaves Drew's tennis decision rules unchanged and replaces the live Polymarket execution path with a separate event-first executor.
+Version 6.5.9.1 leaves Drew's tennis decision rules unchanged and replaces the live Polymarket execution path with a separate event-first executor.
 
 ## What changed
 
@@ -39,7 +39,7 @@ Version 6.5.9 leaves Drew's tennis decision rules unchanged and replaces the liv
 1. Replace the GitHub repository contents with this archive.
 2. Commit and push.
 3. Redeploy the existing Railway service.
-4. Confirm startup reports Version `6.5.9` and `Polymarket execution: LIVE`.
+4. Confirm startup reports Version `6.5.9.1` and `Polymarket execution: LIVE`.
 5. No Supabase migration is required.
 
 See `POLYMARKET_EXECUTION_SETUP.md` and `EXECUTION_REBUILD_AUDIT.md`.

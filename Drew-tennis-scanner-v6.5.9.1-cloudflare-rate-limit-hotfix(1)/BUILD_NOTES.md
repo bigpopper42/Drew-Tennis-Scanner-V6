@@ -1,4 +1,4 @@
-# Version 6.5.9 Build Notes
+# Version 6.5.9.1 Build Notes
 
 ## Rebuilt execution module
 
@@ -17,6 +17,17 @@ The new path is deliberately ordered:
 9. Submit one IOC market order.
 10. Confirm and classify the exchange state without guessing.
 
+
+## Cloudflare/rate-limit hotfix
+
+- Fixed the Brooksby–Moutet failure where a Cloudflare 403 page containing error 1015 was misclassified as a permanent authentication rejection.
+- Added one shared 0.20-second minimum interval between Polymarket SDK calls made by this worker.
+- Added exponential backoff for definite Cloudflare 1015 and HTTP 429 responses.
+- Definite edge throttles are retried; ambiguous order-submission failures are still never blindly replayed.
+- Exhausted edge throttles remain retryable from the next fresh qualifying scanner snapshot.
+- Raw Cloudflare HTML is replaced with a short safe error message in Railway and Discord.
+- The V6.5.9 event-first market resolution and moneyline validation logic was not replaced.
+
 ## Regression cases covered
 
 - `J. Mensik vs T. Svajda`, with spread and total markets beside the real moneyline.
@@ -31,7 +42,7 @@ The new path is deliberately ordered:
 
 ## Verification
 
-- `python -m pytest -q`: 151 tests passed in the source tree and from a fresh extraction of the replacement ZIP.
+- `python -m pytest -q`: 154 tests passed in the source tree and from a fresh extraction of the replacement ZIP.
 - `python -m compileall -q .`: passed.
 - Order, search, event, market, position, activity, and preview request keys are checked against the official Python SDK 0.1.2 source contracts.
 - No live-money order was submitted during development because production credentials were not used. The first Railway order remains the final integration test.

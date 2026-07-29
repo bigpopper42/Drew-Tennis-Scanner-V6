@@ -1,4 +1,4 @@
-# Polymarket US Live Execution Setup — Version 6.5.9
+# Polymarket US Live Execution Setup — Version 6.5.9.1
 
 The scanner decides whether a tennis setup qualifies. The rebuilt executor independently resolves and validates the corresponding Polymarket US moneyline before placing an order.
 
@@ -64,7 +64,7 @@ EXECUTION_MAX_PRICE_CENTS=99
 EXECUTION_SLIPPAGE_TICKS=1
 ```
 
-`EXECUTION_MIN_MARKET_CONFIDENCE` may remain in Railway for compatibility, but Version 6.5.9 does not use it in live execution.
+`EXECUTION_MIN_MARKET_CONFIDENCE` may remain in Railway for compatibility, but Version 6.5.9.1 does not use it in live execution.
 
 ## Discord meanings
 

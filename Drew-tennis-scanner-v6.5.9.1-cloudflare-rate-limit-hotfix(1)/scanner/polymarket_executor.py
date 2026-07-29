@@ -96,6 +96,8 @@ class ExecutionConfig:
     event_page_limit: int = 8
     order_status_attempts: int = 6
     api_read_attempts: int = 3
+    api_min_interval_seconds: float = 0.20
+    rate_limit_backoff_seconds: float = 1.0
     # Retained only so existing Railway environment/configuration remains
     # compatible.  The new executor never uses a public confidence threshold.
     minimum_market_confidence: float = 0.0
@@ -210,26 +212,73 @@ class PolymarketExecutionEngine:
                 secret_key=config.secret_key,
                 timeout=20.0,
             )
+        self._next_api_call_at = 0.0
 
     def close(self) -> None:
         self.client.close()
 
+    def _wait_for_api_slot(self) -> None:
+        """Space authenticated SDK calls so one worker does not burst at the edge."""
+
+        interval = max(0.0, float(self.config.api_min_interval_seconds))
+        now = time.monotonic()
+        if now < self._next_api_call_at:
+            time.sleep(self._next_api_call_at - now)
+        self._next_api_call_at = time.monotonic() + interval
+
+    def _rate_limit_delay(self, attempt: int) -> None:
+        delay = max(0.0, float(self.config.rate_limit_backoff_seconds)) * (2**attempt)
+        if delay:
+            time.sleep(delay)
+
     def _read_api(self, call: Any, *, stage: str, label: str) -> Any:
         last_error: Exception | None = None
-        for attempt in range(max(1, self.config.api_read_attempts)):
+        attempts = max(1, int(self.config.api_read_attempts))
+        for attempt in range(attempts):
             try:
+                self._wait_for_api_slot()
                 return call()
             except Exception as exc:  # SDK exceptions share status_code/request_id fields.
+                last_error = exc
+                if _is_edge_rate_limit(exc):
+                    if attempt + 1 < attempts:
+                        self._rate_limit_delay(attempt)
+                        continue
+                    break
                 if _is_definitive_api_rejection(exc):
                     raise PermanentAPIExecutionError(
-                        f"{label} was rejected by Polymarket: {exc}",
+                        f"{label} was rejected by Polymarket: {_safe_exception_message(exc)}",
                         stage,
                         status_code=_exception_status_code(exc),
                     ) from exc
-                last_error = exc
-                if attempt + 1 < self.config.api_read_attempts:
+                if attempt + 1 < attempts:
                     time.sleep(min(0.5, 0.1 * (2**attempt)))
-        raise RetryableExecutionError(f"{label} failed: {last_error}", stage) from last_error
+        message = _safe_exception_message(last_error) if last_error is not None else "unknown error"
+        raise RetryableExecutionError(f"{label} failed: {message}", stage) from last_error
+
+    def _create_order(self, order_request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Retry only definite edge throttles; never replay an ambiguous POST."""
+
+        attempts = max(1, int(self.config.api_read_attempts))
+        for attempt in range(attempts):
+            try:
+                self._wait_for_api_slot()
+                payload = self.client.orders.create(dict(order_request)) or {}
+                return payload if isinstance(payload, Mapping) else {}
+            except Exception as exc:
+                if not _is_edge_rate_limit(exc):
+                    raise
+                if attempt + 1 < attempts:
+                    self._rate_limit_delay(attempt)
+                    continue
+                raise RetryableExecutionError(
+                    "Polymarket/Cloudflare temporarily rate-limited the order request (1015/429).",
+                    "order_submission",
+                ) from exc
+        raise RetryableExecutionError(
+            "Polymarket/Cloudflare temporarily rate-limited the order request (1015/429).",
+            "order_submission",
+        )
 
     @staticmethod
     def signal_key(record: Mapping[str, Any]) -> str:
@@ -270,7 +319,7 @@ class PolymarketExecutionEngine:
         except Exception as exc:
             return result(
                 "FAILED",
-                f"Unexpected market resolution failure: {exc}",
+                f"Unexpected market resolution failure: {_safe_exception_message(exc)}",
                 retryable=True,
                 failure_stage="market_resolution",
             )
@@ -496,26 +545,26 @@ class PolymarketExecutionEngine:
                 )
 
             try:
-                created = self.client.orders.create(order_request) or {}
+                created = self._create_order(order_request)
+            except RetryableExecutionError as create_error:
+                return result(
+                    "FAILED",
+                    str(create_error),
+                    retryable=True,
+                    failure_stage=create_error.stage,
+                    account_balance=float(balance),
+                    buying_power=float(buying_power),
+                    stake_amount=float(stake),
+                    player_price_cents=player_price_cents,
+                    minimum_trade_qty=float(minimum_qty),
+                    tick_size=float(tick_size),
+                    **common,
+                )
             except Exception as create_error:
-                if _is_explicit_rate_limit_rejection(create_error):
-                    return result(
-                        "FAILED",
-                        f"Polymarket rate-limited the order before acceptance: {create_error}",
-                        retryable=True,
-                        failure_stage="order_submission",
-                        account_balance=float(balance),
-                        buying_power=float(buying_power),
-                        stake_amount=float(stake),
-                        player_price_cents=player_price_cents,
-                        minimum_trade_qty=float(minimum_qty),
-                        tick_size=float(tick_size),
-                        **common,
-                    )
                 if _is_definitive_api_rejection(create_error):
                     return result(
                         "REJECTED",
-                        f"Polymarket rejected the order request before accepting it: {create_error}",
+                        f"Polymarket rejected the order request before accepting it: {_safe_exception_message(create_error)}",
                         retryable=False,
                         failure_stage="order_submission",
                         account_balance=float(balance),
@@ -553,7 +602,7 @@ class PolymarketExecutionEngine:
                         (
                             recovered_reason
                             if recovered_status == "EXECUTED"
-                            else f"Order submission response was interrupted, but a pending order was found for this market: {create_error}"
+                            else "Order submission response was interrupted, but a pending order was found for this market."
                         ),
                         retryable=False,
                         failure_stage="order_submission",
@@ -584,7 +633,7 @@ class PolymarketExecutionEngine:
                 if recovered_position:
                     return result(
                         "PENDING",
-                        f"Order submission response was interrupted, but a position appeared for this market: {create_error}",
+                        "Order submission response was interrupted, but a position appeared for this market.",
                         retryable=False,
                         failure_stage="order_submission",
                         account_balance=float(balance),
@@ -633,7 +682,7 @@ class PolymarketExecutionEngine:
                 return result(
                     "PENDING",
                     "Polymarket order submission outcome is unknown, so automatic retry was suppressed "
-                    f"to prevent a duplicate order: {create_error}.{reconciliation_note}",
+                    "to prevent a duplicate order." + reconciliation_note,
                     retryable=False,
                     failure_stage="order_submission",
                     account_balance=float(balance),
@@ -684,7 +733,7 @@ class PolymarketExecutionEngine:
         except Exception as exc:
             return result(
                 "FAILED",
-                f"Polymarket API request failed: {exc}",
+                f"Polymarket API request failed: {_safe_exception_message(exc)}",
                 retryable=True,
                 failure_stage="api",
                 **common,
@@ -1063,6 +1112,7 @@ class PolymarketExecutionEngine:
         last_error = ""
         for attempt in range(max(1, self.config.order_status_attempts)):
             try:
+                self._wait_for_api_slot()
                 payload = self.client.orders.retrieve(order_id) or {}
                 if isinstance(payload, Mapping) and payload:
                     last = payload
@@ -1070,7 +1120,9 @@ class PolymarketExecutionEngine:
                     if status in {"EXECUTED", "REJECTED", "UNFILLED"}:
                         return payload
             except Exception as exc:
-                last_error = str(exc)
+                last_error = _safe_exception_message(exc)
+                if _is_edge_rate_limit(exc) and attempt + 1 < self.config.order_status_attempts:
+                    self._rate_limit_delay(attempt)
             if attempt + 1 < self.config.order_status_attempts:
                 time.sleep(min(1.0, 0.15 * (2**attempt)))
         # The order ID is authoritative evidence that the submission reached
@@ -1111,7 +1163,47 @@ def _exception_status_code(exc: Exception) -> int | None:
         return None
 
 
+def _exception_text(exc: Exception | None) -> str:
+    if exc is None:
+        return ""
+    return str(exc or "").strip()
+
+
+def _is_edge_rate_limit(exc: Exception) -> bool:
+    """Identify only definite HTTP/Cloudflare throttles that are safe to retry."""
+
+    if type(exc).__name__ == "RateLimitError" or _exception_status_code(exc) == 429:
+        return True
+    text = _exception_text(exc).casefold()
+    markers = (
+        "error 1015",
+        "errorcode: 1015",
+        "errorcode\":1015",
+        "cloudflare to restrict access",
+        "you are being rate limited",
+        "temporarily rate limited",
+        "too many requests",
+        "http 429",
+        "status 429",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _safe_exception_message(exc: Exception | None) -> str:
+    text = _exception_text(exc)
+    if _is_edge_rate_limit(exc) if exc is not None else False:
+        return "Polymarket/Cloudflare temporarily rate-limited the request (1015/429)."
+    if not text:
+        return "unknown error"
+    # Never send an entire HTML edge page to Railway/Discord.
+    if "<!doctype html" in text.casefold() or "<html" in text.casefold():
+        return "Polymarket returned an HTML error page instead of an API response."
+    return " ".join(text.split())[:500]
+
+
 def _is_definitive_api_rejection(exc: Exception) -> bool:
+    if _is_edge_rate_limit(exc):
+        return False
     name = type(exc).__name__
     if name in {"AuthenticationError", "BadRequestError", "NotFoundError", "PermissionDeniedError"}:
         return True
@@ -1120,14 +1212,8 @@ def _is_definitive_api_rejection(exc: Exception) -> bool:
 
 
 def _is_explicit_rate_limit_rejection(exc: Exception) -> bool:
-    """Return True only for a definite HTTP 429 response from order creation.
-
-    A 429 means the API refused the request because of rate limiting. Unlike a
-    timeout or dropped connection, it is not an unknown post-acceptance state,
-    so a later fresh scanner snapshot may safely retry it.
-    """
-
-    return type(exc).__name__ == "RateLimitError" or _exception_status_code(exc) == 429
+    # Backward-compatible alias used by older tests/imports.
+    return _is_edge_rate_limit(exc)
 
 
 def _normalize_name(value: str) -> str:
