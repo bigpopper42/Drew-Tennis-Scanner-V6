@@ -1,6 +1,6 @@
-# Drew Tennis Scanner Version 6.5.9.1
+# Drew Tennis Scanner Version 6.5.9.2
 
-Version 6.5.9.1 leaves Drew's tennis decision rules unchanged and replaces the live Polymarket execution path with a separate event-first executor.
+Version 6.5.9.2 leaves Drew's tennis decision rules unchanged and replaces the live Polymarket execution path with a separate event-first executor.
 
 ## What changed
 
@@ -9,6 +9,8 @@ Version 6.5.9.1 leaves Drew's tennis decision rules unchanged and replaces the l
 - When the slug is missing or points to a prop, resolves the exact event using `eventSlug`, event ID, `gameId`, or the two players plus event date.
 - Lists only markets attached to that event, then rejects spreads, totals, exact-score, set, game, handicap, and other props.
 - Maps the backed player from authenticated structured market sides, including initials, middle initials, full names, and surname-first names.
+- Sends the backed outcome explicitly on every order: `OUTCOME_SIDE_YES` for LONG/YES or `OUTCOME_SIDE_NO` for SHORT/NO, paired with `ORDER_ACTION_BUY` and the matching legacy intent.
+- Verifies the preview and returned order cannot silently change the selected YES/NO outcome.
 - Uses the original working market-order shape: `cashOrderQty` equal to exactly 20% of authenticated account balance, limited by buying power.
 - Reads `minimumTradeQty` and `orderPriceMinTickSize` from the selected market before previewing the order.
 - Blocks a second order on the same market when an open order, decimal position, or prior trade execution already exists. Different markets may be held simultaneously.
@@ -39,7 +41,7 @@ Version 6.5.9.1 leaves Drew's tennis decision rules unchanged and replaces the l
 1. Replace the GitHub repository contents with this archive.
 2. Commit and push.
 3. Redeploy the existing Railway service.
-4. Confirm startup reports Version `6.5.9.1` and `Polymarket execution: LIVE`.
+4. Confirm startup reports Version `6.5.9.2` and `Polymarket execution: LIVE`.
 5. No Supabase migration is required.
 
 See `POLYMARKET_EXECUTION_SETUP.md` and `EXECUTION_REBUILD_AUDIT.md`.

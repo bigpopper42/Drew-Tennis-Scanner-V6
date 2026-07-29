@@ -26,6 +26,15 @@ from typing import Any, Protocol
 OPEN_MARKET_STATES = {"MARKET_STATE_OPEN", "OPEN"}
 LONG_SIDE = "Long / YES"
 SHORT_SIDE = "Short / NO"
+YES_OUTCOME_SIDE = "OUTCOME_SIDE_YES"
+NO_OUTCOME_SIDE = "OUTCOME_SIDE_NO"
+BUY_ACTION = "ORDER_ACTION_BUY"
+BUY_LONG_INTENT = "ORDER_INTENT_BUY_LONG"
+BUY_SHORT_INTENT = "ORDER_INTENT_BUY_SHORT"
+BUY_INTENT_TO_OUTCOME = {
+    BUY_LONG_INTENT: YES_OUTCOME_SIDE,
+    BUY_SHORT_INTENT: NO_OUTCOME_SIDE,
+}
 MONEYLINE_TYPES = {
     "SPORTS_MARKET_TYPE_MONEYLINE",
     "MONEYLINE",
@@ -479,13 +488,20 @@ class PolymarketExecutionEngine:
                 )
 
             long_reference = _align_price(long_reference, tick_size)
+            expected_outcome_side = (
+                YES_OUTCOME_SIDE if resolved.market_side == LONG_SIDE else NO_OUTCOME_SIDE
+            )
+            expected_intent = (
+                BUY_LONG_INTENT if resolved.market_side == LONG_SIDE else BUY_SHORT_INTENT
+            )
             order_request = {
                 "marketSlug": slug,
-                "intent": (
-                    "ORDER_INTENT_BUY_LONG"
-                    if resolved.market_side == LONG_SIDE
-                    else "ORDER_INTENT_BUY_SHORT"
-                ),
+                # Send both supported representations. Polymarket documents that
+                # outcomeSide + action takes priority when both are present, so
+                # SHORT/NO cannot be interpreted as a legacy LONG/YES request.
+                "intent": expected_intent,
+                "outcomeSide": expected_outcome_side,
+                "action": BUY_ACTION,
                 "type": "ORDER_TYPE_MARKET",
                 "cashOrderQty": {
                     "value": f"{stake:.2f}",
@@ -519,12 +535,12 @@ class PolymarketExecutionEngine:
                     f"Polymarket preview returned the wrong market slug: {preview_slug}",
                     "preview",
                 )
-            preview_intent = str(preview_order.get("intent") or "").strip()
-            if preview_intent and preview_intent != order_request["intent"]:
-                raise PermanentExecutionError(
-                    f"Polymarket preview returned the wrong order intent: {preview_intent}",
-                    "preview",
-                )
+            _validate_order_payload_contract(
+                preview,
+                expected_slug=slug,
+                expected_outcome_side=expected_outcome_side,
+                stage="preview",
+            )
             preview_status, preview_state, preview_reason, _ = _interpret_order(preview)
             if preview_status == "REJECTED":
                 return result(
@@ -694,8 +710,20 @@ class PolymarketExecutionEngine:
                     **common,
                 )
 
+            _validate_order_payload_contract(
+                created,
+                expected_slug=slug,
+                expected_outcome_side=expected_outcome_side,
+                stage="order_submission",
+            )
             order_id = _order_id(created)
             verified = self._confirm_order(order_id, created)
+            _validate_order_payload_contract(
+                verified,
+                expected_slug=slug,
+                expected_outcome_side=expected_outcome_side,
+                stage="order_status",
+            )
             status, order_state, reason, filled = _interpret_order(verified)
             status_poll_error = str(verified.get("_status_poll_error") or "").strip()
             if status == "PENDING" and status_poll_error:
@@ -1629,6 +1657,96 @@ def _align_price(price: Decimal, tick: Decimal) -> Decimal:
 def _decimal_string(value: Decimal) -> str:
     text = format(value, "f")
     return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def _payload_orders(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Return every concrete order object exposed by an SDK response."""
+
+    orders: list[Mapping[str, Any]] = []
+    nested = payload.get("order")
+    if isinstance(nested, Mapping):
+        orders.append(nested)
+    if any(
+        key in payload
+        for key in (
+            "marketSlug",
+            "intent",
+            "outcomeSide",
+            "action",
+            "state",
+            "status",
+        )
+    ):
+        orders.append(payload)
+    for execution in list(payload.get("executions") or []):
+        if isinstance(execution, Mapping) and isinstance(execution.get("order"), Mapping):
+            orders.append(execution["order"])
+    return orders
+
+
+def _buy_outcome_side(order: Mapping[str, Any]) -> tuple[str, str]:
+    """Resolve a returned buy order to YES or NO and detect contradictions."""
+
+    intent = str(order.get("intent") or "").strip().upper()
+    outcome_side = str(order.get("outcomeSide") or "").strip().upper()
+    action = str(order.get("action") or "").strip().upper()
+    intent_outcome = BUY_INTENT_TO_OUTCOME.get(intent, "")
+
+    if outcome_side:
+        if outcome_side not in {YES_OUTCOME_SIDE, NO_OUTCOME_SIDE}:
+            return "", f"unknown outcome side {outcome_side}"
+        if action and action != BUY_ACTION:
+            return "", f"non-buy action {action}"
+        if intent and not intent_outcome:
+            return "", f"non-buy or unknown intent {intent}"
+        if intent_outcome and intent_outcome != outcome_side:
+            return "", (
+                f"conflicting intent {intent} and outcome side {outcome_side}"
+            )
+        return outcome_side, ""
+
+    if action:
+        return "", f"action {action} was returned without outcomeSide"
+    if intent:
+        if not intent_outcome:
+            return "", f"non-buy or unknown intent {intent}"
+        return intent_outcome, ""
+    return "", ""
+
+
+def _validate_order_payload_contract(
+    payload: Mapping[str, Any],
+    *,
+    expected_slug: str,
+    expected_outcome_side: str,
+    stage: str,
+) -> None:
+    """Reject any preview/order response that identifies another market or side.
+
+    Older SDK responses may omit side fields, so absence is tolerated. Whenever
+    Polymarket returns intent or outcomeSide/action, however, it must agree with
+    the exact YES/NO contract selected from authenticated marketSides.
+    """
+
+    for order in _payload_orders(payload):
+        returned_slug = str(order.get("marketSlug") or "").strip()
+        if returned_slug and returned_slug.casefold() != expected_slug.casefold():
+            raise PermanentExecutionError(
+                f"Polymarket {stage} returned the wrong market slug: {returned_slug}",
+                stage,
+            )
+        returned_outcome, error = _buy_outcome_side(order)
+        if error:
+            raise PermanentExecutionError(
+                f"Polymarket {stage} returned an invalid order side contract: {error}",
+                stage,
+            )
+        if returned_outcome and returned_outcome != expected_outcome_side:
+            raise PermanentExecutionError(
+                "Polymarket "
+                f"{stage} returned {returned_outcome}, expected {expected_outcome_side}.",
+                stage,
+            )
 
 
 def _find_exposure_order(payload: Mapping[str, Any], slug: str) -> Mapping[str, Any] | None:

@@ -1,10 +1,10 @@
-# Polymarket Execution Rebuild Audit — Version 6.5.9.1
+# Polymarket Execution Rebuild Audit — Version 6.5.9.2
 
 ## Bottom line
 
-Version 6.5.9.1 does **not** reuse the V6.5.6–V6.5.8 execution matcher. The live execution authority is now `scanner/polymarket_executor.py`; `scanner/execution.py` is only a compatibility re-export.
+Version 6.5.9.2 does **not** reuse the V6.5.6–V6.5.8 execution matcher. The live execution authority is now `scanner/polymarket_executor.py`; `scanner/execution.py` is only a compatibility re-export.
 
-This audit reviewed all 21 production Python files (9,341 lines), all 11 Python test files (3,221 lines), deployment/configuration files, and the SQL schema/migrations. The review included full source reading, execution-path tracing, AST/static scans, comparison with the available V6.5.5 and V6.5.8 repositories, compilation, configuration startup, and automated tests.
+This audit reviewed all 21 production Python files (9,545 lines), all 11 Python test files (3,419 lines), deployment/configuration files, and the SQL schema/migrations. The review included full source reading, execution-path tracing, AST/static scans, comparison with the available V6.5.5 and V6.5.8 repositories, compilation, configuration startup, and automated tests.
 
 The exact V6.5.4 repository was not available in this workspace. Therefore, this document does **not** claim an exact V6.5.4 line-by-line diff. V6.5.4 remains the external rollback baseline because it is the last version Drew observed placing orders.
 
@@ -47,7 +47,7 @@ The rebuilt executor follows one strict sequence:
 
 ## Official Polymarket contract comparison
 
-| Requirement | Official contract reviewed | V6.5.9.1 implementation |
+| Requirement | Official contract reviewed | V6.5.9.2 implementation |
 |---|---|---|
 | Authentication | `PolymarketUS(key_id, secret_key)` with Ed25519 credentials | `PolymarketExecutionEngine.__init__` |
 | Event discovery | Events support `gameId`, `eventDate`, start-time, status, category, limit and offset filters | `_matching_events`, `_event_queries` |
@@ -55,14 +55,15 @@ The rebuilt executor follows one strict sequence:
 | Event-scoped markets | Markets support `gameId` and `eventSlug` filtering | `_event_markets` |
 | Sports market type | Structured `sportsMarketTypeV2`, `gameId`, and `line` fields | `_market_type`, `_validated_market_side` |
 | Market precision | Read `minimumTradeQty` and `orderPriceMinTickSize` from each market | `execute_trade`, `_required_decimal` |
-| Market order | SDK `CreateOrderParams` supports `cashOrderQty`, intent, market type, IOC, slippage and automatic indicator | `order_request` in `execute_trade` |
+| Market order | REST contract supports `cashOrderQty`, intent or `outcomeSide` + `action`, market type, IOC, slippage and automatic indicator | `order_request` in `execute_trade` sends both direction forms |
 | Preview | SDK type requires `PreviewOrderParams = {"request": CreateOrderParams}` | `_preview` |
 | Open-order filter | `orders.list({"slugs": [...]})` | `_open_orders` |
 | Positions | `portfolio.positions({"market": slug, ...})`; decimal quantities are authoritative | `_positions`, `_has_position` |
 | Activities | `marketSlug`, trade type, sort order and limit filters | `_activities`, `_find_trade_activity` |
 | POST retry safety | Official SDK does not automatically retry non-idempotent order creation | one `orders.create` call; reconciliation on ambiguous failure |
+| Order-side confirmation | Returned orders expose `intent` and/or `outcomeSide` + `action`; explicit outcome takes priority | `_validate_order_payload_contract` checks preview, creation, and status responses |
 | Order lifecycle | New, pending, partial fill, filled, canceled, rejected and expired states | `_interpret_order`, `_confirm_order` |
-| Real-time state | Official docs recommend private WebSocket updates over polling | V6.5.9.1 uses bounded REST polling; WebSocket remains a documented limitation |
+| Real-time state | Official docs recommend private WebSocket updates over polling | V6.5.9.2 uses bounded REST polling; WebSocket remains a documented limitation |
 
 Official sources reviewed:
 
@@ -91,7 +92,7 @@ Official sources reviewed:
 | `scanner/market_validation.py` | 319 | Public informational market validation reviewed. It is no longer the final live-execution authority. |
 | `scanner/models.py` | 75 | Data models reviewed. No live-order authority. |
 | `scanner/polymarket.py` | 1,241 | Legacy/public lookup reviewed. It can still populate informational Discord fields, but it cannot approve, reject, map, or submit a live order. Its size and old fuzzy matcher are maintenance debt and should eventually be isolated further. |
-| `scanner/polymarket_executor.py` | 1,751 | Rebuilt execution authority reviewed line by line. Event resolution, strict market validation, order construction, precision, idempotency, reconciliation, and status interpretation are covered by focused tests. The 452-line `execute_trade` method should be split in a future cleanup, but its current branches are tested. |
+| `scanner/polymarket_executor.py` | 1,955 | Rebuilt execution authority reviewed line by line. Event resolution, strict market validation, order construction, precision, idempotency, reconciliation, and status interpretation are covered by focused tests. The 452-line `execute_trade` method should be split in a future cleanup, but its current branches are tested. |
 | `scanner/reconciliation.py` | 535 | Paper/outcome reconciliation reviewed. No live order submission. Large function remains maintenance debt. |
 | `scanner/scoring.py` | 251 | Stability scoring reviewed and left unchanged. |
 | `scanner/supabase_dashboard.py` | 167 | Read-only dashboard client reviewed. GET-only retry behavior. |
@@ -119,6 +120,8 @@ Official sources reviewed:
 - Generic title with structured player sides and no explicit market-type field.
 - Spread, total, exact score, set winner, straight sets, tie-break, number-of-sets, and score props rejected.
 - Reversed names, initials, middle initials, accents, surname-first names, boolean LONG flags, and YES/NO side flags.
+- Explicit SHORT/NO request contract (`ORDER_INTENT_BUY_SHORT` + `OUTCOME_SIDE_NO` + `ORDER_ACTION_BUY`).
+- Preview-side mismatch, intent/outcome conflict, and wrong-side create response blocked before any success report.
 - Wrong event/date ambiguity rejected rather than guessed.
 - Missing minimum quantity/tick rejected before order creation.
 - Half-cent tick and decimal minimum quantity handling.
@@ -132,10 +135,10 @@ Official sources reviewed:
 
 ## Final verification outcome
 
-- Full automated suite: **151 tests passed** in the source tree.
-- Replacement archive: extracted into a clean directory and the same **151 tests passed** again.
+- Full automated suite: **158 tests passed** in the source tree.
+- Replacement archive: extracted into a clean directory and the same **158 tests passed** again.
 - Full Python compilation: passed in the source tree and clean extraction.
-- Dry-run Railway configuration startup: passed with Version `6.5.9.1`, 20% sizing, unlimited distinct markets, and same-market upgrades disabled.
+- Dry-run Railway configuration startup: passed with Version `6.5.9.2`, 20% sizing, unlimited distinct markets, and same-market upgrades disabled.
 - AST/static scan: no syntax failures, bare `except:`, `eval`, `exec`, mutable collection defaults, or production TODO/FIXME/HACK markers.
 - Package scan: no live `.env`, credentials, private keys, webhook URLs, caches, compiled Python files, or nested ZIPs included.
 - No live-money order was submitted.
@@ -146,12 +149,12 @@ Official sources reviewed:
 2. **No exact V6.5.4 diff:** the V6.5.4 ZIP was unavailable.
 3. **No private WebSocket listener:** the executor uses bounded REST polling and next-cycle exchange reconciliation. The official docs prefer private WebSocket order updates for real-time lifecycle tracking.
 4. **No local persistent execution ledger:** restart safety depends on exact-market exchange state (open orders, decimal positions and trade activities). That is materially safer than memory-only deduplication but is not a mathematically perfect idempotency key if the exchange is temporarily inconsistent immediately after an ambiguous POST.
-5. **SDK runtime package unavailable in this build container:** the internal package index did not provide `polymarket-us==0.1.2`, and outbound Git access was blocked. The code was checked against the official 0.1.2 repository source/types and pinned to that exact version, but the real package could not be imported here.
+5. **SDK runtime package unavailable in this build container:** the internal package index did not provide `polymarket-us==0.1.2`, and outbound Git access was blocked. The SDK transport and 0.1.2 source/types were reviewed, and the package remains pinned to that version. The current REST contract adds `outcomeSide` + `action`; the SDK order resource forwards the supplied dictionary unchanged, but the real package could not be imported here.
 6. **Legacy code size:** `scanner/polymarket.py`, `scanner/live_mapping.py`, `scanner/worker_runtime.py`, and the new executor contain long functions. They passed the current tests but remain future maintenance risk.
 7. **First live order is the final acceptance gate:** do not call the release live-proven until Railway shows the exact event, moneyline type, side mapping, order ID, and confirmed exchange state.
 
 ## Release decision
 
-V6.5.9.1 is materially different from the failed V6.5.6–V6.5.8 matcher and is suitable for a controlled Railway integration test. It is **not** described as guaranteed or live-proven.
+V6.5.9.2 is materially different from the failed V6.5.6–V6.5.8 matcher and is suitable for a controlled Railway integration test. It is **not** described as guaranteed or live-proven.
 
 If the first live trade cannot resolve a normal active ATP moneyline, maps the wrong player, selects a prop, submits a duplicate, or reports a fill without exchange evidence, disable execution and restore the untouched V6.5.4 deployment.

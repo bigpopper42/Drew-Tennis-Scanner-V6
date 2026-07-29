@@ -263,6 +263,9 @@ class FakeOrders:
                     "order": {
                         "id": "order-1",
                         "marketSlug": params["marketSlug"],
+                        "intent": params.get("intent"),
+                        "outcomeSide": params.get("outcomeSide"),
+                        "action": params.get("action"),
                         "state": "ORDER_STATE_FILLED",
                         "cumQuantity": "25.64",
                     },
@@ -397,6 +400,8 @@ def test_direct_moneyline_executes_exact_twenty_percent_cash_order() -> None:
     assert request["cashOrderQty"] == {"value": "20.00", "currency": "USD"}
     assert "quantity" not in request
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
+    assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
+    assert request["action"] == "ORDER_ACTION_BUY"
     assert request["type"] == "ORDER_TYPE_MARKET"
     assert request["tif"] == "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL"
     assert request["manualOrderIndicator"] == "MANUAL_ORDER_INDICATOR_AUTOMATIC"
@@ -421,6 +426,8 @@ def test_long_order_uses_best_offer() -> None:
     assert result.player_price_cents == 78.0
     request = client.orders.create_calls[0]
     assert request["intent"] == "ORDER_INTENT_BUY_LONG"
+    assert request["outcomeSide"] == "OUTCOME_SIDE_YES"
+    assert request["action"] == "ORDER_ACTION_BUY"
     assert request["slippageTolerance"]["currentPrice"]["value"] == "0.78"
 
 
@@ -1458,6 +1465,84 @@ def test_preview_wrong_intent_blocks_live_submission() -> None:
     assert not orders.create_calls
 
 
+def test_preview_explicit_no_contract_without_legacy_intent_is_accepted() -> None:
+    orders = FakeOrders(
+        preview_response={
+            "order": {
+                "marketSlug": MONEYLINE_SLUG,
+                "outcomeSide": "OUTCOME_SIDE_NO",
+                "action": "ORDER_ACTION_BUY",
+                "state": "ORDER_STATE_PENDING_NEW",
+            }
+        }
+    )
+    result = engine(FakeClient(orders=orders)).execute_trade(record())
+
+    assert result.status == "EXECUTED"
+    assert orders.create_calls
+
+
+def test_preview_wrong_explicit_outcome_blocks_live_submission() -> None:
+    orders = FakeOrders(
+        preview_response={
+            "order": {
+                "marketSlug": MONEYLINE_SLUG,
+                "outcomeSide": "OUTCOME_SIDE_YES",
+                "action": "ORDER_ACTION_BUY",
+                "state": "ORDER_STATE_PENDING_NEW",
+            }
+        }
+    )
+    result = engine(FakeClient(orders=orders)).execute_trade(record())
+
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "preview"
+    assert result.retryable is False
+    assert not orders.create_calls
+
+
+def test_preview_conflicting_intent_and_outcome_blocks_live_submission() -> None:
+    orders = FakeOrders(
+        preview_response={
+            "order": {
+                "marketSlug": MONEYLINE_SLUG,
+                "intent": "ORDER_INTENT_BUY_LONG",
+                "outcomeSide": "OUTCOME_SIDE_NO",
+                "action": "ORDER_ACTION_BUY",
+                "state": "ORDER_STATE_PENDING_NEW",
+            }
+        }
+    )
+    result = engine(FakeClient(orders=orders)).execute_trade(record())
+
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "preview"
+    assert "conflicting" in result.reason.lower()
+    assert not orders.create_calls
+
+
+def test_created_order_wrong_explicit_outcome_is_not_reported_as_executed() -> None:
+    orders = FakeOrders(
+        create_response={
+            "id": "wrong-side-1",
+            "order": {
+                "id": "wrong-side-1",
+                "marketSlug": MONEYLINE_SLUG,
+                "intent": "ORDER_INTENT_BUY_LONG",
+                "outcomeSide": "OUTCOME_SIDE_YES",
+                "action": "ORDER_ACTION_BUY",
+                "state": "ORDER_STATE_FILLED",
+                "cumQuantity": "10",
+            },
+        }
+    )
+    result = engine(FakeClient(orders=orders)).execute_trade(record())
+
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "order_submission"
+    assert "expected OUTCOME_SIDE_NO" in result.reason
+
+
 def test_ambiguous_create_failure_with_failed_reconciliation_stays_pending() -> None:
     class ReconciliationFailureOrders(FakeOrders):
         def list(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1528,10 +1613,12 @@ def test_minimum_quantity_is_checked_at_adverse_slippage_price() -> None:
     assert not client.orders.create_calls
 
 
-def test_order_request_uses_only_official_sdk_create_fields() -> None:
+def test_order_request_uses_only_official_create_contract_fields() -> None:
     official_fields = {
         "marketSlug",
         "intent",
+        "outcomeSide",
+        "action",
         "type",
         "price",
         "quantity",
@@ -1549,7 +1636,15 @@ def test_order_request_uses_only_official_sdk_create_fields() -> None:
 
     request = client.orders.create_calls[0]
     assert set(request).issubset(official_fields)
-    assert {"marketSlug", "intent", "type", "cashOrderQty", "tif"}.issubset(request)
+    assert {
+        "marketSlug",
+        "intent",
+        "outcomeSide",
+        "action",
+        "type",
+        "cashOrderQty",
+        "tif",
+    }.issubset(request)
 
 
 def test_event_and_market_queries_use_official_sdk_filter_fields() -> None:

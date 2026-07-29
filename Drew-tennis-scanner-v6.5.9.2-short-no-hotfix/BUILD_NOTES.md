@@ -1,4 +1,4 @@
-# Version 6.5.9.1 Build Notes
+# Version 6.5.9.2 Build Notes
 
 ## Rebuilt execution module
 
@@ -17,6 +17,16 @@ The new path is deliberately ordered:
 9. Submit one IOC market order.
 10. Confirm and classify the exchange state without guessing.
 
+
+## SHORT/NO explicit contract hotfix
+
+- Every live order now sends both supported direction representations: the legacy `intent` and the explicit `outcomeSide` + `action` pair.
+- SHORT/NO orders send `ORDER_INTENT_BUY_SHORT`, `OUTCOME_SIDE_NO`, and `ORDER_ACTION_BUY`.
+- LONG/YES orders send `ORDER_INTENT_BUY_LONG`, `OUTCOME_SIDE_YES`, and `ORDER_ACTION_BUY`.
+- The preview, create response, and final order-status response are checked against the exact authenticated YES/NO outcome selected for the backed player.
+- A wrong outcome, non-buy action, unknown side, or conflict between `intent` and `outcomeSide` blocks the order from being reported as successful.
+- The LONG-side order-book reference remains authoritative for slippage. For a NO contract priced at 78¢, the request correctly uses the corresponding YES reference price of 22¢.
+- The scanner rules, 20% sizing, event resolution, moneyline filtering, duplicate protection, and Cloudflare retry behavior are unchanged.
 
 ## Cloudflare/rate-limit hotfix
 
@@ -42,7 +52,7 @@ The new path is deliberately ordered:
 
 ## Verification
 
-- `python -m pytest -q`: 154 tests passed in the source tree and from a fresh extraction of the replacement ZIP.
+- `python -m pytest -q`: 158 tests passed in the source tree and from a fresh extraction of the replacement ZIP.
 - `python -m compileall -q .`: passed.
-- Order, search, event, market, position, activity, and preview request keys are checked against the official Python SDK 0.1.2 source contracts.
+- Order direction fields are checked against the current official REST contract. SDK request wrapping and transport are checked against the official Python SDK source, which forwards the supplied request dictionary unchanged.
 - No live-money order was submitted during development because production credentials were not used. The first Railway order remains the final integration test.
