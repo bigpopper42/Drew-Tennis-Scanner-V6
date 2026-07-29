@@ -113,7 +113,7 @@ def test_discord_says_execution_will_retry_when_public_lookup_misses() -> None:
 
     message = notifier.format_trade_alert(payload)
 
-    assert "execution engine will retry before rejecting" in message
+    assert "live executor will resolve the exact event and moneyline" in message
     assert "Polymarket market not matched" not in message
 
 

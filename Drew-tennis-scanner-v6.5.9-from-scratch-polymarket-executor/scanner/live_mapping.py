@@ -237,14 +237,57 @@ def _is_tiebreak(event: Mapping[str, Any], set_number: int) -> bool:
     return "tiebreak" in status or "tie break" in status
 
 
+def _game_number_from_entry(item: Mapping[str, Any]) -> Optional[int]:
+    value = _safe_int(item.get("number_game"))
+    return value if value is not None and value > 0 else None
+
+
 def _completed_games(event: Mapping[str, Any]) -> List[Mapping[str, Any]]:
-    rows: List[Mapping[str, Any]] = []
+    """Return one completed row per set/game from API Tennis point-by-point data.
+
+    API Tennis can repeat a completed game in later snapshots. Counting those
+    rows twice fabricates breaks and can produce impossible states such as a
+    two-break lead at 1-0. Numbered rows are therefore keyed by
+    ``(set_number, number_game)`` and the latest complete snapshot wins.
+    """
+
+    numbered: Dict[Tuple[int, int], Mapping[str, Any]] = {}
+    unnumbered: List[Mapping[str, Any]] = []
     for item in _point_entries(event):
         if "tiebreak" in str(item.get("set_number") or "").lower():
             continue
-        if item.get("serve_winner") in {"First Player", "Second Player"}:
-            rows.append(item)
-    return rows
+        if item.get("serve_winner") not in {"First Player", "Second Player"}:
+            continue
+        set_number = _set_number_from_entry(item)
+        game_number = _game_number_from_entry(item)
+        if set_number is not None and game_number is not None:
+            numbered[(set_number, game_number)] = item
+        else:
+            unnumbered.append(item)
+    ordered = [numbered[key] for key in sorted(numbered)]
+    return ordered + unnumbered
+
+
+def _completed_games_for_set(
+    event: Mapping[str, Any], set_number: int
+) -> List[Mapping[str, Any]]:
+    rows = [game for game in _completed_games(event) if _set_number_from_entry(game) == set_number]
+    first_games, second_games, score_found = _score_for_set(event, set_number)
+    if not score_found:
+        return rows
+
+    completed_count = max(0, first_games + second_games)
+    numbered = [game for game in rows if _game_number_from_entry(game) is not None]
+    if numbered:
+        # Ignore future/stale rows that contradict the authoritative current set
+        # score. This also prevents duplicate feed snapshots from inflating the
+        # calculated break lead.
+        return [
+            game
+            for game in numbered
+            if (_game_number_from_entry(game) or 0) <= completed_count
+        ]
+    return rows[:completed_count]
 
 
 def _breaks_suffered_by_set(event: Mapping[str, Any], side: str, completed_sets: int) -> List[int]:
@@ -268,7 +311,7 @@ def _total_breaks_suffered(event: Mapping[str, Any], side: str) -> Optional[int]
 def _current_break_lead_from_points(event: Mapping[str, Any], side: str, set_number: int, tiebreak: bool) -> Optional[int]:
     if tiebreak:
         return 0
-    games = [game for game in _completed_games(event) if _set_number_from_entry(game) == set_number]
+    games = _completed_games_for_set(event, set_number)
     if not games:
         return None
     opponent = _other_side(side)
@@ -282,10 +325,7 @@ def _current_break_lead_from_points(event: Mapping[str, Any], side: str, set_num
 def _current_set_breaks_suffered(
     event: Mapping[str, Any], side: str, set_number: int
 ) -> Optional[int]:
-    games = [
-        game for game in _completed_games(event)
-        if _set_number_from_entry(game) == set_number
-    ]
+    games = _completed_games_for_set(event, set_number)
     if not games:
         return None
     opponent = _other_side(side)
@@ -590,19 +630,6 @@ def build_live_scanner_mapping(
 
     break_lead = _current_break_lead_from_points(event, side, set_number, tiebreak)
     break_source = "Calculated from point-by-point"
-    if break_lead is not None and score_found:
-        # Duplicate/cumulative API Tennis point-by-point rows can otherwise
-        # fabricate multiple breaks. A net break lead cannot exceed the maximum
-        # implied by the current game-score difference (1-0 => at most one,
-        # 3-0 => at most two, etc.).
-        score_difference = max(0, backed_games - opponent_games)
-        score_implied_max = math.ceil(score_difference / 2.0)
-        if break_lead > score_implied_max:
-            warnings.append(
-                "Point-by-point break count exceeded the current set score and was clamped."
-            )
-            break_lead = score_implied_max
-            break_source = "Point-by-point reconciled to set score"
     if break_lead is None:
         break_lead, break_source = _current_break_lead_fallback(event, side, set_number, tiebreak)
         warnings.append(

@@ -95,7 +95,7 @@ class WorkerConfigTests(unittest.TestCase):
             config = WorkerConfig.from_env()
         self.assertFalse(hasattr(config, "execution_maximum_order_usd"))
         self.assertIsNone(config.public_summary()["execution_maximum_order_usd"])
-        self.assertTrue(config.public_summary()["execution_same_market_upgrades"])
+        self.assertFalse(config.public_summary()["execution_same_market_upgrades"])
 
 
 class WorkerLogicTests(unittest.TestCase):

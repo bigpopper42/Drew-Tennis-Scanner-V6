@@ -233,7 +233,7 @@ class WorkerConfig:
             "execution_slippage_ticks": self.execution_slippage_ticks,
             "execution_maximum_open_positions": None,
             "execution_concurrent_markets": "unlimited distinct markets",
-            "execution_same_market_upgrades": True,
+            "execution_same_market_upgrades": False,
             "storage_mode": "all_player_evaluations" if self.save_all_scans else "qualified_trades_only",
             "stores_only_qualified_trades": not self.save_all_scans,
             "dry_run": self.dry_run,
@@ -346,8 +346,6 @@ class RailwayShadowWorker:
         self.sent_discord_alerts: set[str] = set()
         self.pending_execution_signals: Dict[str, Dict[str, Any]] = {}
         self.processed_execution_signals: set[str] = set()
-        self.execution_retry_after: Dict[str, float] = {}
-        self.execution_retry_attempts: Dict[str, int] = {}
         self.discord_notifier: Optional[DiscordNotifier] = None
         self.execution_engine: Optional[PolymarketExecutionEngine] = None
         if config.discord_notifications:
@@ -1017,38 +1015,65 @@ class RailwayShadowWorker:
     ) -> None:
         if self.execution_engine is None:
             return
+
+        # A retry must never reuse a stale tennis snapshot.  At the beginning
+        # of every scanner cycle, pending signals are made ineligible until a
+        # fresh record for the same match confirms the setup is still a TRADE.
+        for pending in self.pending_execution_signals.values():
+            pending["_execution_ready"] = False
+
         for record in records:
+            signal_key = self.execution_engine.signal_key(record)
+            if not signal_key:
+                continue
+
+            if signal_key in self.pending_execution_signals:
+                if record.get("decision_status") != "TRADE":
+                    # The live setup no longer qualifies.  Drop the retry
+                    # rather than placing an order from an obsolete snapshot.
+                    self.pending_execution_signals.pop(signal_key, None)
+                    continue
+
+                refreshed = dict(record)
+                # INITIAL/UPGRADE is an alert concept, not a retry gate.  The
+                # executor still requires this field, so a still-valid pending
+                # trade is explicitly authorized for one fresh retry attempt.
+                refreshed["alert_eligible"] = True
+                refreshed["_execution_ready"] = True
+                self.pending_execution_signals[signal_key] = refreshed
+                continue
+
             if (
                 record.get("decision_status") != "TRADE"
                 or not record.get("alert_eligible")
+                or signal_key in self.processed_execution_signals
             ):
                 continue
-            signal_key = self.execution_engine.signal_key(record)
-            if signal_key in self.processed_execution_signals or signal_key in self.pending_execution_signals:
-                continue
-            if time.monotonic() < self.execution_retry_after.get(signal_key, 0.0):
-                continue
-            self.pending_execution_signals[signal_key] = dict(record)
+
+            queued = dict(record)
+            queued["_execution_ready"] = True
+            self.pending_execution_signals[signal_key] = queued
 
     def _flush_execution_signals(self, report: CycleReport) -> None:
         if self.execution_engine is None or not self.pending_execution_signals:
             return
         for signal_key, record in list(self.pending_execution_signals.items()):
-            report.execution_attempts += 1
-            result = self.execution_engine.execute_trade(record)
-            self.pending_execution_signals.pop(signal_key, None)
+            if not record.get("_execution_ready"):
+                continue
 
-            if result.retryable:
-                attempts = self.execution_retry_attempts.get(signal_key, 0) + 1
-                self.execution_retry_attempts[signal_key] = attempts
-                # Retry safe pre-submission failures with bounded exponential
-                # backoff. Never automatically retry an ambiguous order submit.
-                delay = min(120.0, 15.0 * (2 ** min(attempts - 1, 3)))
-                self.execution_retry_after[signal_key] = time.monotonic() + delay
-            else:
+            execution_record = dict(record)
+            execution_record.pop("_execution_ready", None)
+            report.execution_attempts += 1
+            result = self.execution_engine.execute_trade(execution_record)
+
+            if result.terminal:
                 self.processed_execution_signals.add(signal_key)
-                self.execution_retry_after.pop(signal_key, None)
-                self.execution_retry_attempts.pop(signal_key, None)
+                self.pending_execution_signals.pop(signal_key, None)
+            else:
+                # Keep a retryable result pending, but it cannot run again
+                # until the next scanner cycle supplies a fresh qualifying
+                # record for this exact signal key.
+                record["_execution_ready"] = False
 
             if result.order_created:
                 report.execution_orders += 1

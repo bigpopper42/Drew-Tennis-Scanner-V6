@@ -225,8 +225,8 @@ class DiscordNotifier:
         if not record.get("market_found"):
             if record.get("execution_market_lookup_retry_enabled"):
                 return (
-                    "Public market lookup missed · execution engine will retry "
-                    "before rejecting"
+                    "Public lookup unavailable · live executor will resolve "
+                    "the exact event and moneyline"
                 )
             return "Polymarket market not matched"
         try:
