@@ -1,6 +1,6 @@
 # Automation Roadmap
 
-## Completed through Version 6.5.9.3
+## Completed through Version 6.5.9.4
 
 - API Tennis-first live discovery and automated decision-tree scanning
 - Polymarket US event-first moneyline resolution
@@ -27,7 +27,7 @@ Planned rule:
 - Report stop placement, activation, partial fill, full fill, and failure through Discord.
 - Backtest and dry-run the behavior before allowing live exits.
 
-**The 40¢ emergency exit is documented here but is not active in Version 6.5.9.3.**
+**The 40¢ emergency exit is documented here but is not active in Version 6.5.9.4.**
 
 ## Later milestones
 

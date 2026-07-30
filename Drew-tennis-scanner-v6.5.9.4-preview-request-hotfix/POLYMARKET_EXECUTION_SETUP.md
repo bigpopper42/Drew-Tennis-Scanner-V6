@@ -1,4 +1,4 @@
-# Polymarket US Live Execution Setup — Version 6.5.9.3
+# Polymarket US Live Execution Setup — Version 6.5.9.4
 
 The scanner decides whether a tennis setup qualifies. The rebuilt executor independently resolves and validates the corresponding Polymarket US moneyline before placing an order.
 
@@ -12,7 +12,7 @@ The scanner decides whether a tennis setup qualifies. The rebuilt executor indep
 - Market type: ordinary match-winner moneyline only.
 - Order type: price-capped IOC limit order.
 - Regulatory indicator: `MANUAL_ORDER_INDICATOR_AUTOMATIC`.
-- Preview: order parameters are sent directly to `orders.preview`, matching the installed SDK method.
+- Preview: the order is sent under the top-level `request` envelope required by the deployed Polymarket preview endpoint.
 - Confirmation: a fill is reported only from an exchange fill state or execution; a bare order ID is pending, not filled.
 
 ## Event-first market resolution
@@ -64,7 +64,7 @@ EXECUTION_MAX_PRICE_CENTS=99
 EXECUTION_SLIPPAGE_TICKS=1
 ```
 
-`EXECUTION_MIN_MARKET_CONFIDENCE` may remain in Railway for compatibility, but Version 6.5.9.3 does not use it in live execution.
+`EXECUTION_MIN_MARKET_CONFIDENCE` may remain in Railway for compatibility, but Version 6.5.9.4 does not use it in live execution.
 
 ## Discord meanings
 
@@ -76,7 +76,7 @@ EXECUTION_SLIPPAGE_TICKS=1
 
 ## Planned 40¢ emergency exit
 
-The future protective-exit rule is a fixed 40¢ trigger on the backed outcome. It is not active in Version 6.5.9.3.
+The future protective-exit rule is a fixed 40¢ trigger on the backed outcome. It is not active in Version 6.5.9.4.
 
 ## Disable live execution immediately
 

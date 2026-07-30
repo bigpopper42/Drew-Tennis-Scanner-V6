@@ -1,8 +1,8 @@
-# Polymarket Execution Rebuild Audit — Version 6.5.9.3
+# Polymarket Execution Rebuild Audit — Version 6.5.9.4
 
 ## Bottom line
 
-Version 6.5.9.3 does **not** reuse the V6.5.6–V6.5.8 execution matcher. The live execution authority is now `scanner/polymarket_executor.py`; `scanner/execution.py` is only a compatibility re-export.
+Version 6.5.9.4 does **not** reuse the V6.5.6–V6.5.8 execution matcher. The live execution authority is now `scanner/polymarket_executor.py`; `scanner/execution.py` is only a compatibility re-export.
 
 This audit reviewed all 21 production Python files (9,545 lines), all 11 Python test files (3,419 lines), deployment/configuration files, and the SQL schema/migrations. The review included full source reading, execution-path tracing, AST/static scans, comparison with the available V6.5.5 and V6.5.8 repositories, compilation, configuration startup, and automated tests.
 
@@ -47,7 +47,7 @@ The rebuilt executor follows one strict sequence:
 
 ## Official Polymarket contract comparison
 
-| Requirement | Official contract reviewed | V6.5.9.3 implementation |
+| Requirement | Official contract reviewed | V6.5.9.4 implementation |
 |---|---|---|
 | Authentication | `PolymarketUS(key_id, secret_key)` with Ed25519 credentials | `PolymarketExecutionEngine.__init__` |
 | Event discovery | Events support `gameId`, `eventDate`, start-time, status, category, limit and offset filters | `_matching_events`, `_event_queries` |
@@ -56,14 +56,14 @@ The rebuilt executor follows one strict sequence:
 | Sports market type | Structured `sportsMarketTypeV2`, `gameId`, and `line` fields | `_market_type`, `_validated_market_side` |
 | Market precision | Read `minimumTradeQty` and `orderPriceMinTickSize` from each market | `execute_trade`, `_required_decimal` |
 | Price-capped IOC limit order | REST contract supports explicit `price`, `quantity`, intent or `outcomeSide` + `action`, IOC, and automatic indicator | `order_request` sends both direction forms and an adverse-price cap |
-| Preview | Installed SDK `orders.preview(params)` forwards the supplied order parameter dictionary | `_preview` sends direct order parameters |
+| Preview | The deployed preview endpoint requires `{ "request": order }`; direct order fields return `Request is required` | `_preview` sends the required request envelope |
 | Open-order filter | `orders.list({"slugs": [...]})` | `_open_orders` |
 | Positions | `portfolio.positions({"market": slug, ...})`; decimal quantities are authoritative | `_positions`, `_has_position` |
 | Activities | `marketSlug`, trade type, sort order and limit filters | `_activities`, `_find_trade_activity` |
 | POST retry safety | Official SDK does not automatically retry non-idempotent order creation | one `orders.create` call; reconciliation on ambiguous failure |
 | Order-side confirmation | Returned orders expose `intent` and/or `outcomeSide` + `action`; explicit outcome takes priority | `_validate_order_payload_contract` checks preview, creation, and status responses |
 | Order lifecycle | New, pending, partial fill, filled, canceled, rejected and expired states | `_interpret_order`, `_confirm_order` |
-| Real-time state | Official docs recommend private WebSocket updates over polling | V6.5.9.3 uses bounded REST polling; WebSocket remains a documented limitation |
+| Real-time state | Official docs recommend private WebSocket updates over polling | V6.5.9.4 uses bounded REST polling; WebSocket remains a documented limitation |
 
 Official sources reviewed:
 
@@ -138,7 +138,7 @@ Official sources reviewed:
 - Full automated suite: **159 tests passed** in the source tree.
 - Replacement archive: extracted into a clean directory and the same **159 tests passed** again.
 - Full Python compilation: passed in the source tree and clean extraction.
-- Dry-run Railway configuration startup: passed with Version `6.5.9.3`, 20% sizing, unlimited distinct markets, and same-market upgrades disabled.
+- Dry-run Railway configuration startup: passed with Version `6.5.9.4`, 20% sizing, unlimited distinct markets, and same-market upgrades disabled.
 - AST/static scan: no syntax failures, bare `except:`, `eval`, `exec`, mutable collection defaults, or production TODO/FIXME/HACK markers.
 - Package scan: no live `.env`, credentials, private keys, webhook URLs, caches, compiled Python files, or nested ZIPs included.
 - No live-money order was submitted.
@@ -155,6 +155,6 @@ Official sources reviewed:
 
 ## Release decision
 
-V6.5.9.3 is materially different from the failed V6.5.6–V6.5.8 matcher and is suitable for a controlled Railway integration test. It is **not** described as guaranteed or live-proven.
+V6.5.9.4 is materially different from the failed V6.5.6–V6.5.8 matcher and is suitable for a controlled Railway integration test. It is **not** described as guaranteed or live-proven.
 
 If the first live trade cannot resolve a normal active ATP moneyline, maps the wrong player, selects a prop, submits a duplicate, or reports a fill without exchange evidence, disable execution and restore the untouched V6.5.4 deployment.

@@ -249,7 +249,9 @@ class FakeOrders:
         self.preview_calls.append(deepcopy(params))
         if self.preview_response is not None:
             return deepcopy(self.preview_response)
-        return {"order": deepcopy(params)}
+        if "request" not in params:
+            raise FakeAPIError("Request is required", status_code=400)
+        return {"order": deepcopy(params["request"])}
 
     def create(self, params: dict[str, Any]) -> dict[str, Any]:
         self.create_calls.append(deepcopy(params))
@@ -406,7 +408,7 @@ def test_direct_moneyline_executes_exact_twenty_percent_price_capped_ioc_order()
     assert request["tif"] == "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL"
     assert request["manualOrderIndicator"] == "MANUAL_ORDER_INDICATOR_AUTOMATIC"
     assert request["synchronousExecution"] is True
-    assert client.orders.preview_calls == [request]
+    assert client.orders.preview_calls == [{"request": request}]
 
 
 def test_short_order_uses_inverted_yes_limit_price_with_one_tick_player_slippage() -> None:
@@ -942,12 +944,12 @@ def test_short_no_expired_ioc_ignores_default_exchange_option_enum() -> None:
     assert request["quantity"] * 0.88 <= 13.53
 
 
-def test_preview_uses_official_direct_order_params() -> None:
+def test_preview_uses_required_request_envelope() -> None:
     client = FakeClient()
     engine(client).execute_trade(record())
 
-    assert client.orders.preview_calls[0] == client.orders.create_calls[0]
-    assert "request" not in client.orders.preview_calls[0]
+    assert set(client.orders.preview_calls[0]) == {"request"}
+    assert client.orders.preview_calls[0]["request"] == client.orders.create_calls[0]
 
 
 def test_preview_rejection_never_creates_order() -> None:

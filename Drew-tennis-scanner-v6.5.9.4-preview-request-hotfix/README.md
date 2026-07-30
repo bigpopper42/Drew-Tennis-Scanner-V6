@@ -1,6 +1,6 @@
-# Drew Tennis Scanner Version 6.5.9.3
+# Drew Tennis Scanner Version 6.5.9.4
 
-Version 6.5.9.3 leaves Drew's tennis decision rules unchanged and replaces the live Polymarket execution path with a separate event-first executor.
+Version 6.5.9.4 leaves Drew's tennis decision rules unchanged and replaces the live Polymarket execution path with a separate event-first executor.
 
 ## What changed
 
@@ -25,7 +25,7 @@ Version 6.5.9.3 leaves Drew's tennis decision rules unchanged and replaces the l
 - Active market and open order book required.
 - Configured live price range required.
 - Market-specific minimum quantity and tick size required.
-- Official direct preview parameters used before submission.
+- Preview request uses the production-required top-level `request` envelope before submission.
 - Price-capped IOC limit order with automatic-order regulatory indicator.
 - Fill, partial fill, pending, rejected, and unfilled states reported separately.
 - The future 40¢ backed-outcome emergency exit is documented but not active in this version.
@@ -42,7 +42,7 @@ Version 6.5.9.3 leaves Drew's tennis decision rules unchanged and replaces the l
 1. Replace the GitHub repository contents with this archive.
 2. Commit and push.
 3. Redeploy the existing Railway service.
-4. Confirm startup reports Version `6.5.9.3` and `Polymarket execution: LIVE`.
+4. Confirm startup reports Version `6.5.9.4` and `Polymarket execution: LIVE`.
 5. No Supabase migration is required.
 
 See `POLYMARKET_EXECUTION_SETUP.md` and `EXECUTION_REBUILD_AUDIT.md`.

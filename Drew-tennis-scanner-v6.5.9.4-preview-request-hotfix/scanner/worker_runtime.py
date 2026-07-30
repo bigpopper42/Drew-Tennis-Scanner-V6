@@ -150,7 +150,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.9.3 locks live sizing at 20%. Any legacy Railway
+            # Version 6.5.9.4 locks live sizing at 20%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(

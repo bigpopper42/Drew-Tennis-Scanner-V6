@@ -1118,8 +1118,12 @@ class PolymarketExecutionEngine:
         return payload if isinstance(payload, Mapping) else {}
 
     def _preview(self, order_request: Mapping[str, Any]) -> Mapping[str, Any]:
+        # The deployed polymarket-us==0.1.2 REST preview endpoint requires the
+        # order under a top-level ``request`` field. Sending the order fields
+        # directly produces HTTP 400: "Request is required". Order creation
+        # remains direct because /v1/orders uses a different request schema.
         payload = self._read_api(
-            lambda: self.client.orders.preview(dict(order_request)),
+            lambda: self.client.orders.preview({"request": dict(order_request)}),
             stage="preview",
             label="Polymarket order preview",
         )

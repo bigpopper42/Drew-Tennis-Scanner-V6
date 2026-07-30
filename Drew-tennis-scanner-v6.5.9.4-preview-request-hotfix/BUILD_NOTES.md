@@ -1,10 +1,14 @@
-# Version 6.5.9.3 Build Notes
+# Version 6.5.9.4 Build Notes
 
 ## SHORT/NO zero-fill correction
 
 The Matsuoka–Mochizuki order reached Polymarket as an accepted SHORT/NO order and received order ID `BJ1MRKCF49NE`, but it finished in `ORDER_STATE_EXPIRED` with zero quantity filled. That is different from a wrong-side submission rejection.
 
-Version 6.5.9.3 changes entry execution as follows:
+Version 6.5.9.4 fixes a preview-envelope regression introduced in 6.5.9.3.
+The deployed preview endpoint requires `{"request": <order>}`; sending the
+order fields directly returns `Request is required` before submission.
+
+Version 6.5.9.4 changes entry execution as follows:
 
 1. Preview calls now send the order parameters directly, matching the installed Polymarket Python SDK contract.
 2. Entry requests now use an explicit price-capped IOC limit order rather than a cash market order.
@@ -28,7 +32,7 @@ Example from the reported failure:
 
 ## Corrected expired-order reporting
 
-`ORD_REJECT_REASON_EXCHANGE_OPTION` is the exchange enum's default value and can appear on a non-rejected response. Version 6.5.9.3 no longer displays it as the cause unless the response actually contains a rejected order state or execution type.
+`ORD_REJECT_REASON_EXCHANGE_OPTION` is the exchange enum's default value and can appear on a non-rejected response. Version 6.5.9.4 no longer displays it as the cause unless the response actually contains a rejected order state or execution type.
 
 A zero-fill IOC expiry is now reported as:
 
