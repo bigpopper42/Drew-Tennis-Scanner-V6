@@ -249,7 +249,7 @@ class FakeOrders:
         self.preview_calls.append(deepcopy(params))
         if self.preview_response is not None:
             return deepcopy(self.preview_response)
-        return {"order": deepcopy(params.get("request") or params)}
+        return {"order": deepcopy(params)}
 
     def create(self, params: dict[str, Any]) -> dict[str, Any]:
         self.create_calls.append(deepcopy(params))
@@ -389,7 +389,7 @@ def engine(client: FakeClient, **config_changes: Any) -> PolymarketExecutionEngi
     return PolymarketExecutionEngine(config(**config_changes), client=client)
 
 
-def test_direct_moneyline_executes_exact_twenty_percent_cash_order() -> None:
+def test_direct_moneyline_executes_exact_twenty_percent_price_capped_ioc_order() -> None:
     client = FakeClient()
     result = engine(client).execute_trade(record())
 
@@ -397,28 +397,30 @@ def test_direct_moneyline_executes_exact_twenty_percent_cash_order() -> None:
     assert result.stake_amount == 20.0
     assert result.market_side == SHORT_SIDE
     request = client.orders.create_calls[0]
-    assert request["cashOrderQty"] == {"value": "20.00", "currency": "USD"}
-    assert "quantity" not in request
+    assert request["price"] == {"value": "0.21", "currency": "USD"}
+    assert request["quantity"] == 25.31
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
     assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
     assert request["action"] == "ORDER_ACTION_BUY"
-    assert request["type"] == "ORDER_TYPE_MARKET"
+    assert request["type"] == "ORDER_TYPE_LIMIT"
     assert request["tif"] == "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL"
     assert request["manualOrderIndicator"] == "MANUAL_ORDER_INDICATOR_AUTOMATIC"
     assert request["synchronousExecution"] is True
-    assert client.orders.preview_calls == [{"request": request}]
+    assert client.orders.preview_calls == [request]
 
 
-def test_short_order_uses_long_bid_as_slippage_reference() -> None:
+def test_short_order_uses_inverted_yes_limit_price_with_one_tick_player_slippage() -> None:
     client = FakeClient(markets=FakeMarkets(bid="0.22", ask="0.78"))
     result = engine(client).execute_trade(record())
 
     assert result.market_side == SHORT_SIDE
     assert result.player_price_cents == 78.0
-    assert client.orders.create_calls[0]["slippageTolerance"]["currentPrice"]["value"] == "0.22"
+    request = client.orders.create_calls[0]
+    assert request["price"]["value"] == "0.21"
+    assert request["quantity"] == 25.31
 
 
-def test_long_order_uses_best_offer() -> None:
+def test_long_order_uses_best_offer_plus_one_tick_as_limit() -> None:
     client = FakeClient()
     result = engine(client).execute_trade(record(player="Trevor Svajda", opponent="Jakub Mensik"))
 
@@ -428,7 +430,8 @@ def test_long_order_uses_best_offer() -> None:
     assert request["intent"] == "ORDER_INTENT_BUY_LONG"
     assert request["outcomeSide"] == "OUTCOME_SIDE_YES"
     assert request["action"] == "ORDER_ACTION_BUY"
-    assert request["slippageTolerance"]["currentPrice"]["value"] == "0.78"
+    assert request["price"]["value"] == "0.79"
+    assert request["quantity"] == 25.31
 
 
 def test_scanner_side_and_confidence_never_override_authenticated_sides() -> None:
@@ -692,7 +695,10 @@ def test_twenty_percent_has_no_fixed_dollar_cap() -> None:
 
     assert result.status == "EXECUTED"
     assert result.stake_amount == 200.0
-    assert client.orders.create_calls[0]["cashOrderQty"]["value"] == "200.00"
+    request = client.orders.create_calls[0]
+    assert request["price"]["value"] == "0.21"
+    assert request["quantity"] == 253.16
+    assert request["quantity"] * 0.79 <= 200.0
 
 
 def test_book_must_be_open() -> None:
@@ -889,12 +895,59 @@ def test_existing_same_market_open_order_blocks_duplicate_and_preserves_order_id
     assert not client.orders.create_calls
 
 
-def test_preview_uses_official_request_wrapper() -> None:
+def test_short_no_expired_ioc_ignores_default_exchange_option_enum() -> None:
+    orders = FakeOrders(
+        create_response={
+            "id": "BJ1MRKCF49NE",
+            "executions": [
+                {
+                    "type": "EXECUTION_TYPE_EXPIRED",
+                    "orderRejectReason": "ORD_REJECT_REASON_EXCHANGE_OPTION",
+                    "order": {
+                        "id": "BJ1MRKCF49NE",
+                        "marketSlug": MONEYLINE_SLUG,
+                        "intent": "ORDER_INTENT_BUY_SHORT",
+                        "outcomeSide": "OUTCOME_SIDE_NO",
+                        "action": "ORDER_ACTION_BUY",
+                        "type": "ORDER_TYPE_LIMIT",
+                        "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
+                        "state": "ORDER_STATE_EXPIRED",
+                        "cumQuantity": "0",
+                    },
+                }
+            ],
+        }
+    )
+    client = FakeClient(
+        markets=FakeMarkets(bid="0.13", ask="0.87"),
+        account=FakeAccount(balance=67.67, buying_power=67.67),
+        orders=orders,
+    )
+
+    result = engine(client).execute_trade(record())
+
+    assert result.status == "UNFILLED"
+    assert result.order_id == "BJ1MRKCF49NE"
+    assert result.order_state == "ORDER_STATE_EXPIRED"
+    assert result.retryable is True
+    assert "EXCHANGE_OPTION" not in result.reason
+    assert "no position was opened" in result.reason.lower()
+    request = orders.create_calls[0]
+    assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
+    assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
+    assert request["action"] == "ORDER_ACTION_BUY"
+    assert request["type"] == "ORDER_TYPE_LIMIT"
+    assert request["price"] == {"value": "0.12", "currency": "USD"}
+    assert request["quantity"] == 15.37
+    assert request["quantity"] * 0.88 <= 13.53
+
+
+def test_preview_uses_official_direct_order_params() -> None:
     client = FakeClient()
     engine(client).execute_trade(record())
 
-    assert set(client.orders.preview_calls[0]) == {"request"}
-    assert client.orders.preview_calls[0]["request"] == client.orders.create_calls[0]
+    assert client.orders.preview_calls[0] == client.orders.create_calls[0]
+    assert "request" not in client.orders.preview_calls[0]
 
 
 def test_preview_rejection_never_creates_order() -> None:
@@ -1642,7 +1695,8 @@ def test_order_request_uses_only_official_create_contract_fields() -> None:
         "outcomeSide",
         "action",
         "type",
-        "cashOrderQty",
+        "price",
+        "quantity",
         "tif",
     }.issubset(request)
 

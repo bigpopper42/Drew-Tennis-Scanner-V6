@@ -5,7 +5,7 @@ The scanner decides *whether* to trade.  This module does only five things:
 1. Resolve the exact Polymarket sports event for the two players.
 2. Select the event's match-winner moneyline using structured API fields.
 3. Map the backed player to LONG/YES or SHORT/NO.
-4. Size and preview one IOC market order from authenticated buying power.
+4. Size and preview one price-capped IOC order from authenticated buying power.
 5. Confirm the exchange order state and report it without guessing.
 
 No fuzzy market-wide candidate harvesting is used.  Public discovery can suggest
@@ -72,6 +72,8 @@ TERMINAL_ORDER_STATES = {
     "ORDER_STATE_REJECTED",
     "ORDER_STATE_EXPIRED",
 }
+DEFAULT_EXCHANGE_REJECT_REASON = "ORD_REJECT_REASON_EXCHANGE_OPTION"
+
 PENDING_ORDER_STATES = {
     "ORDER_STATE_NEW",
     "ORDER_STATE_PENDING_NEW",
@@ -467,6 +469,10 @@ class PolymarketExecutionEngine:
                     **common,
                 )
 
+            # Use an explicit price-capped IOC limit order instead of a cash
+            # market order. This removes any ambiguity in SHORT/NO slippage:
+            # Polymarket always expects price.value on the LONG/YES instrument,
+            # so a NO order at player price X must use YES reference 1 - X.
             adverse_player_price = min(
                 Decimal("0.99"),
                 player_price + tick_size * Decimal(max(0, int(self.config.slippage_ticks))),
@@ -487,7 +493,12 @@ class PolymarketExecutionEngine:
                     **common,
                 )
 
-            long_reference = _align_price(long_reference, tick_size)
+            if resolved.market_side == LONG_SIDE:
+                limit_long_price = adverse_player_price
+            else:
+                limit_long_price = Decimal("1") - adverse_player_price
+            limit_long_price = _align_price(limit_long_price, tick_size)
+
             expected_outcome_side = (
                 YES_OUTCOME_SIDE if resolved.market_side == LONG_SIDE else NO_OUTCOME_SIDE
             )
@@ -502,24 +513,16 @@ class PolymarketExecutionEngine:
                 "intent": expected_intent,
                 "outcomeSide": expected_outcome_side,
                 "action": BUY_ACTION,
-                "type": "ORDER_TYPE_MARKET",
-                "cashOrderQty": {
-                    "value": f"{stake:.2f}",
+                "type": "ORDER_TYPE_LIMIT",
+                "price": {
+                    "value": _decimal_string(limit_long_price),
                     "currency": "USD",
                 },
+                "quantity": float(estimated_quantity),
                 "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
                 "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
                 "synchronousExecution": True,
                 "maxBlockTime": "5",
-                "slippageTolerance": {
-                    # Polymarket prices always refer to the LONG/YES instrument,
-                    # even for ORDER_INTENT_BUY_SHORT.
-                    "currentPrice": {
-                        "value": _decimal_string(long_reference),
-                        "currency": "USD",
-                    },
-                    "ticks": max(0, int(self.config.slippage_ticks)),
-                },
             }
 
             preview = self._preview(order_request)
@@ -1116,7 +1119,7 @@ class PolymarketExecutionEngine:
 
     def _preview(self, order_request: Mapping[str, Any]) -> Mapping[str, Any]:
         payload = self._read_api(
-            lambda: self.client.orders.preview({"request": dict(order_request)}),
+            lambda: self.client.orders.preview(dict(order_request)),
             stage="preview",
             label="Polymarket order preview",
         )
@@ -1903,21 +1906,24 @@ def _interpret_order(payload: Mapping[str, Any]) -> tuple[str, str, str, float]:
 
     states = [str(order.get("state") or order.get("status") or "").upper() for order in orders]
     types = [str(execution.get("type") or "").upper() for execution in executions]
-    reasons: list[str] = []
+    raw_reasons: list[str] = []
     filled: list[Decimal] = []
     for order in orders:
         for key in ("orderRejectReason", "rejectReason", "reason", "error", "message"):
             text = str(order.get(key) or "").strip()
             if text:
-                reasons.append(text)
+                raw_reasons.append(text)
         for key in ("cumQuantity", "filledQuantity", "cumulativeQuantity"):
             value = _amount(order.get(key))
             if value is not None and value > 0:
                 filled.append(value)
     for execution in executions:
-        text = str(execution.get("orderRejectReason") or execution.get("text") or "").strip()
-        if text:
-            reasons.append(text)
+        reject_text = str(execution.get("orderRejectReason") or "").strip()
+        execution_text = str(execution.get("text") or "").strip()
+        if reject_text:
+            raw_reasons.append(reject_text)
+        if execution_text:
+            raw_reasons.append(execution_text)
         value = _amount(execution.get("lastShares") or execution.get("filledQuantity"))
         if value is not None and value > 0:
             filled.append(value)
@@ -1926,6 +1932,12 @@ def _interpret_order(payload: Mapping[str, Any]) -> tuple[str, str, str, float]:
     filled_qty = float(max(filled, default=Decimal("0")))
     joined_states = " ".join(states)
     joined_types = " ".join(types)
+    reject_context = "REJECT" in joined_states or "REJECT" in joined_types
+    reasons = [
+        item
+        for item in raw_reasons
+        if reject_context or item.strip().upper() != DEFAULT_EXCHANGE_REJECT_REASON
+    ]
     reason = reasons[-1] if reasons else ""
 
     # A confirmed fill always takes precedence over a later cancel/reject state.
@@ -1947,7 +1959,16 @@ def _interpret_order(payload: Mapping[str, Any]) -> tuple[str, str, str, float]:
     if any(token in joined_states for token in ("CANCELED", "CANCELLED", "EXPIRED")) or any(
         token in joined_types for token in ("CANCELED", "EXPIRED")
     ):
-        return "UNFILLED", state, reason or "Order ended without a fill.", 0.0
+        time_in_force = " ".join(
+            str(order.get("tif") or "").upper() for order in orders
+        )
+        fallback = (
+            "IOC order expired or canceled without a fill because no executable quantity "
+            "remained at the allowed price; no position was opened."
+            if "IMMEDIATE_OR_CANCEL" in time_in_force
+            else "Order ended without a fill; no position was opened."
+        )
+        return "UNFILLED", state, reason or fallback, 0.0
     if state in PENDING_ORDER_STATES or "NEW" in joined_types:
         return "PENDING", state, "Order was submitted and is awaiting a terminal exchange state.", 0.0
     if not payload:

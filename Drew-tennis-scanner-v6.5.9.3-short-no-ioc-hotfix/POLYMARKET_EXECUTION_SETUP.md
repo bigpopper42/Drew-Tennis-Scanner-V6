@@ -1,18 +1,18 @@
-# Polymarket US Live Execution Setup — Version 6.5.9.2
+# Polymarket US Live Execution Setup — Version 6.5.9.3
 
 The scanner decides whether a tennis setup qualifies. The rebuilt executor independently resolves and validates the corresponding Polymarket US moneyline before placing an order.
 
 ## Locked behavior
 
 - Stake: exactly 20% of authenticated `currentBalance`, rounded down to cents and limited by buying power.
-- Order amount field: `cashOrderQty` in USD.
+- Order sizing: explicit contract quantity rounded down at the worst allowed player price, so maximum cost remains at or below the 20% USD stake.
 - Fixed dollar cap: none in scanner code.
 - Distinct markets: may be open simultaneously.
 - Same-market exposure: an existing open order, decimal position, or prior trade execution blocks another full 20% order, including an upgrade signal.
 - Market type: ordinary match-winner moneyline only.
-- Order type: IOC market order.
+- Order type: price-capped IOC limit order.
 - Regulatory indicator: `MANUAL_ORDER_INDICATOR_AUTOMATIC`.
-- Preview: official `{"request": order}` wrapper.
+- Preview: order parameters are sent directly to `orders.preview`, matching the installed SDK method.
 - Confirmation: a fill is reported only from an exchange fill state or execution; a bare order ID is pending, not filled.
 
 ## Event-first market resolution
@@ -64,7 +64,7 @@ EXECUTION_MAX_PRICE_CENTS=99
 EXECUTION_SLIPPAGE_TICKS=1
 ```
 
-`EXECUTION_MIN_MARKET_CONFIDENCE` may remain in Railway for compatibility, but Version 6.5.9.2 does not use it in live execution.
+`EXECUTION_MIN_MARKET_CONFIDENCE` may remain in Railway for compatibility, but Version 6.5.9.3 does not use it in live execution.
 
 ## Discord meanings
 
@@ -74,7 +74,11 @@ EXECUTION_SLIPPAGE_TICKS=1
 - `UNFILLED`: IOC canceled or expired without a fill.
 - `FAILED`: a temporary pre-submission discovery, API, transport, book, balance, or price failure.
 
-## Emergency stop
+## Planned 40¢ emergency exit
+
+The future protective-exit rule is a fixed 40¢ trigger on the backed outcome. It is not active in Version 6.5.9.3.
+
+## Disable live execution immediately
 
 Set and redeploy:
 
