@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.9.4-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.9.5-Railway",
             }
         )
         return session
@@ -116,6 +116,25 @@ class DiscordNotifier:
                 f"Sizing: {result.bankroll_pct:g}% of "
                 f"${result.account_balance:.2f} account balance"
             )
+        if result.order_type:
+            order_label = result.order_type.removeprefix("ORDER_TYPE_")
+            details.append(
+                f"Execution: **{order_label}** · Quantity: **{result.order_quantity:g}** · "
+                f"Slippage cap: **{result.slippage_ticks} tick(s)**"
+            )
+        if result.best_yes_bid_cents or result.best_yes_offer_cents:
+            details.append(
+                f"YES book at submission: bid **{result.best_yes_bid_cents:.1f}¢** · "
+                f"ask **{result.best_yes_offer_cents:.1f}¢**"
+            )
+        if result.yes_reference_price_cents or result.maximum_player_price_cents:
+            details.append(
+                f"Side pricing: backed **{result.player_price_cents:.1f}¢** · "
+                f"YES reference **{result.yes_reference_price_cents:.1f}¢** · "
+                f"maximum backed price **{result.maximum_player_price_cents:.1f}¢**"
+            )
+        if result.failure_stage:
+            details.append(f"Failure stage: `{result.failure_stage}`")
         if result.recommendation_change:
             details.append(f"Signal: **{result.recommendation_change}**")
         if result.filled_quantity:

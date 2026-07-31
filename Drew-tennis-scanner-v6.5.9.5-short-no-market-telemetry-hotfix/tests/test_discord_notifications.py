@@ -167,6 +167,42 @@ def test_discord_only_calls_a_verified_fill_success() -> None:
     assert "Filled contracts: **4.08**" in content
 
 
+def test_discord_execution_update_includes_short_no_diagnostic_trace() -> None:
+    notifier = DiscordNotifier("https://discord.com/api/webhooks/123/token")
+    session = FakeSession()
+    notifier.session = session
+    result = ExecutionResult(
+        status="UNFILLED",
+        reason="No fill.",
+        signal_key="signal",
+        player="Arthur Gea",
+        opponent="Francisco Cerundolo",
+        market_slug="aec-atp-fracer-artgea-2026-07-31",
+        market_side="Short / NO",
+        stake_amount=16.39,
+        account_balance=81.95,
+        player_price_cents=76.0,
+        order_type="ORDER_TYPE_MARKET",
+        order_quantity=20.74,
+        yes_reference_price_cents=24.0,
+        maximum_player_price_cents=79.0,
+        best_yes_bid_cents=24.0,
+        best_yes_offer_cents=76.0,
+        slippage_ticks=3,
+        failure_stage="order_status",
+    )
+
+    notifier.send_execution_update(result)
+
+    content = session.calls[0]["json"]["content"]
+    assert "Execution: **MARKET**" in content
+    assert "Quantity: **20.74**" in content
+    assert "Slippage cap: **3 tick(s)**" in content
+    assert "YES book at submission: bid **24.0¢** · ask **76.0¢**" in content
+    assert "maximum backed price **79.0¢**" in content
+    assert "Failure stage: `order_status`" in content
+
+
 def test_discord_pending_order_is_not_labeled_placed() -> None:
     notifier = DiscordNotifier("https://discord.com/api/webhooks/123/token")
     session = FakeSession()

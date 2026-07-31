@@ -100,7 +100,7 @@ class WorkerConfig:
     execution_minimum_order_usd: float = 0.50
     execution_minimum_price_cents: float = 50.0
     execution_maximum_price_cents: float = 99.0
-    execution_slippage_ticks: int = 1
+    execution_slippage_ticks: int = 3
     execution_minimum_market_confidence: float = 80.0
     dry_run: bool = False
     worker_id: str = ""
@@ -150,7 +150,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.9.4 locks live sizing at 20%. Any legacy Railway
+            # Version 6.5.9.5 locks live sizing at 20%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(
@@ -163,7 +163,7 @@ class WorkerConfig:
                 "EXECUTION_MAX_PRICE_CENTS", 99.0, 1.0, 99.0
             ),
             execution_slippage_ticks=_env_int(
-                "EXECUTION_SLIPPAGE_TICKS", 1, 0, 20
+                "EXECUTION_SLIPPAGE_TICKS", 3, 0, 20
             ),
             execution_minimum_market_confidence=_env_float(
                 "EXECUTION_MIN_MARKET_CONFIDENCE", 80.0, 60.0, 100.0

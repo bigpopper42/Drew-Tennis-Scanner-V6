@@ -5,7 +5,7 @@ The scanner decides *whether* to trade.  This module does only five things:
 1. Resolve the exact Polymarket sports event for the two players.
 2. Select the event's match-winner moneyline using structured API fields.
 3. Map the backed player to LONG/YES or SHORT/NO.
-4. Size and preview one price-capped IOC order from authenticated buying power.
+4. Size and preview one bounded-slippage market order from authenticated buying power.
 5. Confirm the exchange order state and report it without guessing.
 
 No fuzzy market-wide candidate harvesting is used.  Public discovery can suggest
@@ -102,7 +102,7 @@ class ExecutionConfig:
     minimum_order_usd: float = 0.50
     minimum_price_cents: float = 50.0
     maximum_price_cents: float = 99.0
-    slippage_ticks: int = 1
+    slippage_ticks: int = 3
     event_page_size: int = 100
     event_page_limit: int = 8
     order_status_attempts: int = 6
@@ -138,6 +138,13 @@ class ExecutionResult:
     game_id: str = ""
     minimum_trade_qty: float = 0.0
     tick_size: float = 0.0
+    order_type: str = ""
+    order_quantity: float = 0.0
+    yes_reference_price_cents: float = 0.0
+    maximum_player_price_cents: float = 0.0
+    best_yes_bid_cents: float = 0.0
+    best_yes_offer_cents: float = 0.0
+    slippage_ticks: int = 0
     retryable: bool = False
     failure_stage: str = ""
 
@@ -181,6 +188,13 @@ class ExecutionResult:
             "game_id": self.game_id,
             "minimum_trade_qty": self.minimum_trade_qty,
             "tick_size": self.tick_size,
+            "order_type": self.order_type,
+            "order_quantity": self.order_quantity,
+            "yes_reference_price_cents": self.yes_reference_price_cents,
+            "maximum_player_price_cents": self.maximum_player_price_cents,
+            "best_yes_bid_cents": self.best_yes_bid_cents,
+            "best_yes_offer_cents": self.best_yes_offer_cents,
+            "slippage_ticks": self.slippage_ticks,
             "retryable": self.retryable,
             "failure_stage": self.failure_stage,
         }
@@ -348,6 +362,7 @@ class PolymarketExecutionEngine:
             "game_id": resolved.game_id,
         }
 
+        execution_trace: dict[str, Any] = {}
         try:
             open_orders = self._read_api(
                 lambda: self._open_orders(slug),
@@ -425,6 +440,7 @@ class PolymarketExecutionEngine:
                     "order_book",
                 )
 
+            best_yes_bid, best_yes_offer = _best_yes_prices(book)
             long_reference, player_price = _execution_prices(book, resolved.market_side)
             player_price_cents = round(float(player_price * Decimal("100")), 2)
             if not self.config.minimum_price_cents <= player_price_cents <= self.config.maximum_price_cents:
@@ -469,13 +485,16 @@ class PolymarketExecutionEngine:
                     **common,
                 )
 
-            # Use an explicit price-capped IOC limit order instead of a cash
-            # market order. This removes any ambiguity in SHORT/NO slippage:
-            # Polymarket always expects price.value on the LONG/YES instrument,
-            # so a NO order at player price X must use YES reference 1 - X.
+            # Market orders are the exchange-native taker path for both outcomes.
+            # The previous SHORT implementation used an undocumented cashOrderQty
+            # market request, then a synthetic IOC limit.  The official create
+            # contract instead requires quantity for market orders.  Quantity is
+            # sized at the worst permitted backed-outcome price so the order cannot
+            # spend more than the configured bankroll stake when slippage is honored.
+            slippage_ticks = max(0, int(self.config.slippage_ticks))
             adverse_player_price = min(
                 Decimal("0.99"),
-                player_price + tick_size * Decimal(max(0, int(self.config.slippage_ticks))),
+                player_price + tick_size * Decimal(slippage_ticks),
             )
             estimated_quantity = _quantity_for_stake(stake, adverse_player_price, minimum_qty)
             if estimated_quantity < minimum_qty:
@@ -493,12 +512,7 @@ class PolymarketExecutionEngine:
                     **common,
                 )
 
-            if resolved.market_side == LONG_SIDE:
-                limit_long_price = adverse_player_price
-            else:
-                limit_long_price = Decimal("1") - adverse_player_price
-            limit_long_price = _align_price(limit_long_price, tick_size)
-
+            long_reference = _align_price(long_reference, tick_size)
             expected_outcome_side = (
                 YES_OUTCOME_SIDE if resolved.market_side == LONG_SIDE else NO_OUTCOME_SIDE
             )
@@ -513,16 +527,31 @@ class PolymarketExecutionEngine:
                 "intent": expected_intent,
                 "outcomeSide": expected_outcome_side,
                 "action": BUY_ACTION,
-                "type": "ORDER_TYPE_LIMIT",
-                "price": {
-                    "value": _decimal_string(limit_long_price),
-                    "currency": "USD",
-                },
+                "type": "ORDER_TYPE_MARKET",
                 "quantity": float(estimated_quantity),
                 "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
                 "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
                 "synchronousExecution": True,
                 "maxBlockTime": "5",
+                "slippageTolerance": {
+                    # Polymarket requires the YES/long reference price even when
+                    # outcomeSide is NO. The intent tells the exchange which
+                    # direction is adverse for the configured tick tolerance.
+                    "currentPrice": {
+                        "value": _decimal_string(long_reference),
+                        "currency": "USD",
+                    },
+                    "ticks": slippage_ticks,
+                },
+            }
+            execution_trace = {
+                "order_type": "ORDER_TYPE_MARKET",
+                "order_quantity": float(estimated_quantity),
+                "yes_reference_price_cents": round(float(long_reference * Decimal("100")), 2),
+                "maximum_player_price_cents": round(float(adverse_player_price * Decimal("100")), 2),
+                "best_yes_bid_cents": round(float(best_yes_bid * Decimal("100")), 2),
+                "best_yes_offer_cents": round(float(best_yes_offer * Decimal("100")), 2),
+                "slippage_ticks": slippage_ticks,
             }
 
             preview = self._preview(order_request)
@@ -560,6 +589,7 @@ class PolymarketExecutionEngine:
                     order_state=preview_state,
                     minimum_trade_qty=float(minimum_qty),
                     tick_size=float(tick_size),
+                    **execution_trace,
                     **common,
                 )
 
@@ -577,6 +607,7 @@ class PolymarketExecutionEngine:
                     player_price_cents=player_price_cents,
                     minimum_trade_qty=float(minimum_qty),
                     tick_size=float(tick_size),
+                    **execution_trace,
                     **common,
                 )
             except Exception as create_error:
@@ -592,6 +623,7 @@ class PolymarketExecutionEngine:
                         player_price_cents=player_price_cents,
                         minimum_trade_qty=float(minimum_qty),
                         tick_size=float(tick_size),
+                        **execution_trace,
                         **common,
                     )
 
@@ -634,6 +666,7 @@ class PolymarketExecutionEngine:
                         player_price_cents=player_price_cents,
                         minimum_trade_qty=float(minimum_qty),
                         tick_size=float(tick_size),
+                        **execution_trace,
                         **common,
                     )
 
@@ -661,6 +694,7 @@ class PolymarketExecutionEngine:
                         player_price_cents=player_price_cents,
                         minimum_trade_qty=float(minimum_qty),
                         tick_size=float(tick_size),
+                        **execution_trace,
                         **common,
                     )
 
@@ -690,6 +724,7 @@ class PolymarketExecutionEngine:
                         player_price_cents=player_price_cents,
                         minimum_trade_qty=float(minimum_qty),
                         tick_size=float(tick_size),
+                        **execution_trace,
                         **common,
                     )
 
@@ -710,6 +745,7 @@ class PolymarketExecutionEngine:
                     player_price_cents=player_price_cents,
                     minimum_trade_qty=float(minimum_qty),
                     tick_size=float(tick_size),
+                    **execution_trace,
                     **common,
                 )
 
@@ -755,18 +791,34 @@ class PolymarketExecutionEngine:
                 filled_quantity=filled,
                 minimum_trade_qty=float(minimum_qty),
                 tick_size=float(tick_size),
+                **execution_trace,
                 **common,
             )
         except RetryableExecutionError as exc:
-            return result("FAILED", str(exc), retryable=True, failure_stage=exc.stage, **common)
+            return result(
+                "FAILED",
+                str(exc),
+                retryable=True,
+                failure_stage=exc.stage,
+                **execution_trace,
+                **common,
+            )
         except PermanentExecutionError as exc:
-            return result("REJECTED", str(exc), retryable=False, failure_stage=exc.stage, **common)
+            return result(
+                "REJECTED",
+                str(exc),
+                retryable=False,
+                failure_stage=exc.stage,
+                **execution_trace,
+                **common,
+            )
         except Exception as exc:
             return result(
                 "FAILED",
                 f"Polymarket API request failed: {_safe_exception_message(exc)}",
                 retryable=True,
                 failure_stage="api",
+                **execution_trace,
                 **common,
             )
 
@@ -1585,6 +1637,22 @@ def _amount(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+def _best_yes_prices(book: Mapping[str, Any]) -> tuple[Decimal, Decimal]:
+    """Return the visible YES BBO for telemetry without adding a trade gate."""
+
+    bids = [
+        price
+        for level in list(book.get("bids") or [])
+        if isinstance(level, Mapping) and (price := _amount(level.get("px"))) is not None
+    ]
+    offers = [
+        price
+        for level in list(book.get("offers") or [])
+        if isinstance(level, Mapping) and (price := _amount(level.get("px"))) is not None
+    ]
+    return max(bids, default=Decimal("0")), min(offers, default=Decimal("0"))
 
 
 def _execution_prices(book: Mapping[str, Any], side: str) -> tuple[Decimal, Decimal]:

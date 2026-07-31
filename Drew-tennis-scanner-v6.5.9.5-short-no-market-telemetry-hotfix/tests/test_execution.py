@@ -349,7 +349,7 @@ def config(**changes: Any) -> ExecutionConfig:
         "minimum_order_usd": 0.50,
         "minimum_price_cents": 50.0,
         "maximum_price_cents": 99.0,
-        "slippage_ticks": 1,
+        "slippage_ticks": 3,
         "event_page_size": 100,
         "event_page_limit": 2,
         "order_status_attempts": 2,
@@ -391,7 +391,7 @@ def engine(client: FakeClient, **config_changes: Any) -> PolymarketExecutionEngi
     return PolymarketExecutionEngine(config(**config_changes), client=client)
 
 
-def test_direct_moneyline_executes_exact_twenty_percent_price_capped_ioc_order() -> None:
+def test_direct_moneyline_executes_exact_twenty_percent_market_order_with_bounded_slippage() -> None:
     client = FakeClient()
     result = engine(client).execute_trade(record())
 
@@ -399,30 +399,66 @@ def test_direct_moneyline_executes_exact_twenty_percent_price_capped_ioc_order()
     assert result.stake_amount == 20.0
     assert result.market_side == SHORT_SIDE
     request = client.orders.create_calls[0]
-    assert request["price"] == {"value": "0.21", "currency": "USD"}
-    assert request["quantity"] == 25.31
+    assert "price" not in request
+    assert "cashOrderQty" not in request
+    assert request["quantity"] == 24.69
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
     assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
     assert request["action"] == "ORDER_ACTION_BUY"
-    assert request["type"] == "ORDER_TYPE_LIMIT"
+    assert request["type"] == "ORDER_TYPE_MARKET"
     assert request["tif"] == "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL"
     assert request["manualOrderIndicator"] == "MANUAL_ORDER_INDICATOR_AUTOMATIC"
     assert request["synchronousExecution"] is True
+    assert request["slippageTolerance"] == {
+        "currentPrice": {"value": "0.22", "currency": "USD"},
+        "ticks": 3,
+    }
     assert client.orders.preview_calls == [{"request": request}]
 
 
-def test_short_order_uses_inverted_yes_limit_price_with_one_tick_player_slippage() -> None:
+def test_short_market_order_uses_yes_reference_with_three_tick_player_slippage() -> None:
     client = FakeClient(markets=FakeMarkets(bid="0.22", ask="0.78"))
     result = engine(client).execute_trade(record())
 
     assert result.market_side == SHORT_SIDE
     assert result.player_price_cents == 78.0
     request = client.orders.create_calls[0]
-    assert request["price"]["value"] == "0.21"
-    assert request["quantity"] == 25.31
+    assert request["type"] == "ORDER_TYPE_MARKET"
+    assert request["slippageTolerance"]["currentPrice"]["value"] == "0.22"
+    assert request["slippageTolerance"]["ticks"] == 3
+    assert request["quantity"] == 24.69
 
 
-def test_long_order_uses_best_offer_plus_one_tick_as_limit() -> None:
+def test_short_76_cent_live_scenario_submits_market_quantity_and_79_cent_cap() -> None:
+    client = FakeClient(
+        markets=FakeMarkets(bid="0.24", ask="0.76"),
+        account=FakeAccount(balance=81.95, buying_power=81.95),
+    )
+
+    result = engine(client).execute_trade(record())
+
+    assert result.status == "EXECUTED"
+    assert result.market_side == SHORT_SIDE
+    assert result.player_price_cents == 76.0
+    assert result.stake_amount == 16.39
+    assert result.maximum_player_price_cents == 79.0
+    assert result.yes_reference_price_cents == 24.0
+    assert result.best_yes_bid_cents == 24.0
+    assert result.best_yes_offer_cents == 76.0
+    request = client.orders.create_calls[0]
+    assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
+    assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
+    assert request["action"] == "ORDER_ACTION_BUY"
+    assert request["type"] == "ORDER_TYPE_MARKET"
+    assert request["quantity"] == 20.74
+    assert request["quantity"] * 0.79 <= 16.39
+    assert request["slippageTolerance"] == {
+        "currentPrice": {"value": "0.24", "currency": "USD"},
+        "ticks": 3,
+    }
+
+
+def test_long_market_order_uses_best_offer_as_slippage_reference() -> None:
     client = FakeClient()
     result = engine(client).execute_trade(record(player="Trevor Svajda", opponent="Jakub Mensik"))
 
@@ -432,8 +468,10 @@ def test_long_order_uses_best_offer_plus_one_tick_as_limit() -> None:
     assert request["intent"] == "ORDER_INTENT_BUY_LONG"
     assert request["outcomeSide"] == "OUTCOME_SIDE_YES"
     assert request["action"] == "ORDER_ACTION_BUY"
-    assert request["price"]["value"] == "0.79"
-    assert request["quantity"] == 25.31
+    assert request["type"] == "ORDER_TYPE_MARKET"
+    assert request["slippageTolerance"]["currentPrice"]["value"] == "0.78"
+    assert request["slippageTolerance"]["ticks"] == 3
+    assert request["quantity"] == 24.69
 
 
 def test_scanner_side_and_confidence_never_override_authenticated_sides() -> None:
@@ -698,9 +736,8 @@ def test_twenty_percent_has_no_fixed_dollar_cap() -> None:
     assert result.status == "EXECUTED"
     assert result.stake_amount == 200.0
     request = client.orders.create_calls[0]
-    assert request["price"]["value"] == "0.21"
-    assert request["quantity"] == 253.16
-    assert request["quantity"] * 0.79 <= 200.0
+    assert request["quantity"] == 246.91
+    assert request["quantity"] * 0.81 <= 200.0
 
 
 def test_book_must_be_open() -> None:
@@ -911,7 +948,7 @@ def test_short_no_expired_ioc_ignores_default_exchange_option_enum() -> None:
                         "intent": "ORDER_INTENT_BUY_SHORT",
                         "outcomeSide": "OUTCOME_SIDE_NO",
                         "action": "ORDER_ACTION_BUY",
-                        "type": "ORDER_TYPE_LIMIT",
+                        "type": "ORDER_TYPE_MARKET",
                         "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
                         "state": "ORDER_STATE_EXPIRED",
                         "cumQuantity": "0",
@@ -938,10 +975,14 @@ def test_short_no_expired_ioc_ignores_default_exchange_option_enum() -> None:
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
     assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
     assert request["action"] == "ORDER_ACTION_BUY"
-    assert request["type"] == "ORDER_TYPE_LIMIT"
-    assert request["price"] == {"value": "0.12", "currency": "USD"}
-    assert request["quantity"] == 15.37
-    assert request["quantity"] * 0.88 <= 13.53
+    assert request["type"] == "ORDER_TYPE_MARKET"
+    assert "price" not in request
+    assert request["slippageTolerance"] == {
+        "currentPrice": {"value": "0.13", "currency": "USD"},
+        "ticks": 3,
+    }
+    assert request["quantity"] == 15.03
+    assert request["quantity"] * 0.90 <= 13.53
 
 
 def test_preview_uses_required_request_envelope() -> None:
@@ -1697,10 +1738,12 @@ def test_order_request_uses_only_official_create_contract_fields() -> None:
         "outcomeSide",
         "action",
         "type",
-        "price",
         "quantity",
         "tif",
+        "slippageTolerance",
     }.issubset(request)
+    assert "price" not in request
+    assert "cashOrderQty" not in request
 
 
 def test_event_and_market_queries_use_official_sdk_filter_fields() -> None:

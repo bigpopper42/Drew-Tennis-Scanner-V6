@@ -1,11 +1,11 @@
-# Railway Handoff — Version 6.5.9.4
+# Railway Handoff — Version 6.5.9.5
 
-Version 6.5.9.4 replaces the V6.5.8 execution matcher rather than layering another fallback onto it.
+Version 6.5.9.5 replaces the V6.5.8 execution matcher rather than layering another fallback onto it.
 
 - Exact event first; no 520-market fuzzy execution scan.
 - `gameId` or `eventSlug` restricts selection to one sporting event.
 - Authenticated moneyline and player-side validation remains mandatory.
-- Price-capped IOC limit entries use explicit price and quantity while keeping maximum cost at or below exact 20% USD sizing.
+- Quantity-based market entries use explicit contract quantity and a three-tick slippage cap while keeping maximum cost at or below exact 20% USD sizing.
 - Market-specific quantity and tick metadata checked.
 - Distinct markets allowed; duplicate same-market exposure blocked.
 - Temporary pre-submission failures retry on a later cycle.

@@ -387,7 +387,7 @@ for key, value in {
 
 st.title("🎾 Tennis Scanner Assistant")
 st.caption(
-    "Version 6.5.9.4: live tennis scanning, Discord alerts, Railway/Supabase monitoring, and guarded Polymarket US execution with authenticated live-market side and order-book validation."
+    "Version 6.5.9.5: live tennis scanning, Discord alerts, Railway/Supabase monitoring, and guarded Polymarket US execution with authenticated live-market side and order-book validation."
 )
 
 page = st.selectbox(
