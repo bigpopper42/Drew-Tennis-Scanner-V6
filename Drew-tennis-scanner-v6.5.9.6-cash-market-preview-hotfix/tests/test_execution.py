@@ -251,7 +251,10 @@ class FakeOrders:
             return deepcopy(self.preview_response)
         if "request" not in params:
             raise FakeAPIError("Request is required", status_code=400)
-        return {"order": deepcopy(params["request"])}
+        request = params["request"]
+        if request.get("type") == "ORDER_TYPE_MARKET" and "cashOrderQty" not in request:
+            raise FakeAPIError("cash_order_qty is required for market order", status_code=400)
+        return {"order": deepcopy(request)}
 
     def create(self, params: dict[str, Any]) -> dict[str, Any]:
         self.create_calls.append(deepcopy(params))
@@ -400,8 +403,9 @@ def test_direct_moneyline_executes_exact_twenty_percent_market_order_with_bounde
     assert result.market_side == SHORT_SIDE
     request = client.orders.create_calls[0]
     assert "price" not in request
-    assert "cashOrderQty" not in request
-    assert request["quantity"] == 24.69
+    assert "quantity" not in request
+    assert request["cashOrderQty"] == {"value": "20.00", "currency": "USD"}
+    assert result.order_quantity == 24.69
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
     assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
     assert request["action"] == "ORDER_ACTION_BUY"
@@ -426,10 +430,11 @@ def test_short_market_order_uses_yes_reference_with_three_tick_player_slippage()
     assert request["type"] == "ORDER_TYPE_MARKET"
     assert request["slippageTolerance"]["currentPrice"]["value"] == "0.22"
     assert request["slippageTolerance"]["ticks"] == 3
-    assert request["quantity"] == 24.69
+    assert request["cashOrderQty"] == {"value": "20.00", "currency": "USD"}
+    assert result.order_quantity == 24.69
 
 
-def test_short_76_cent_live_scenario_submits_market_quantity_and_79_cent_cap() -> None:
+def test_short_76_cent_live_scenario_submits_cash_market_order_and_79_cent_cap() -> None:
     client = FakeClient(
         markets=FakeMarkets(bid="0.24", ask="0.76"),
         account=FakeAccount(balance=81.95, buying_power=81.95),
@@ -450,8 +455,10 @@ def test_short_76_cent_live_scenario_submits_market_quantity_and_79_cent_cap() -
     assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
     assert request["action"] == "ORDER_ACTION_BUY"
     assert request["type"] == "ORDER_TYPE_MARKET"
-    assert request["quantity"] == 20.74
-    assert request["quantity"] * 0.79 <= 16.39
+    assert request["cashOrderQty"] == {"value": "16.39", "currency": "USD"}
+    assert "quantity" not in request
+    assert result.order_quantity == 20.74
+    assert result.order_quantity * 0.79 <= 16.39
     assert request["slippageTolerance"] == {
         "currentPrice": {"value": "0.24", "currency": "USD"},
         "ticks": 3,
@@ -471,7 +478,8 @@ def test_long_market_order_uses_best_offer_as_slippage_reference() -> None:
     assert request["type"] == "ORDER_TYPE_MARKET"
     assert request["slippageTolerance"]["currentPrice"]["value"] == "0.78"
     assert request["slippageTolerance"]["ticks"] == 3
-    assert request["quantity"] == 24.69
+    assert request["cashOrderQty"] == {"value": "20.00", "currency": "USD"}
+    assert result.order_quantity == 24.69
 
 
 def test_scanner_side_and_confidence_never_override_authenticated_sides() -> None:
@@ -736,8 +744,10 @@ def test_twenty_percent_has_no_fixed_dollar_cap() -> None:
     assert result.status == "EXECUTED"
     assert result.stake_amount == 200.0
     request = client.orders.create_calls[0]
-    assert request["quantity"] == 246.91
-    assert request["quantity"] * 0.81 <= 200.0
+    assert request["cashOrderQty"] == {"value": "200.00", "currency": "USD"}
+    assert "quantity" not in request
+    assert result.order_quantity == 246.91
+    assert result.order_quantity * 0.81 <= 200.0
 
 
 def test_book_must_be_open() -> None:
@@ -981,8 +991,10 @@ def test_short_no_expired_ioc_ignores_default_exchange_option_enum() -> None:
         "currentPrice": {"value": "0.13", "currency": "USD"},
         "ticks": 3,
     }
-    assert request["quantity"] == 15.03
-    assert request["quantity"] * 0.90 <= 13.53
+    assert request["cashOrderQty"] == {"value": "13.53", "currency": "USD"}
+    assert "quantity" not in request
+    assert result.order_quantity == 15.03
+    assert result.order_quantity * 0.90 <= 13.53
 
 
 def test_preview_uses_required_request_envelope() -> None:
@@ -991,6 +1003,31 @@ def test_preview_uses_required_request_envelope() -> None:
 
     assert set(client.orders.preview_calls[0]) == {"request"}
     assert client.orders.preview_calls[0]["request"] == client.orders.create_calls[0]
+
+
+def test_market_preview_requires_cash_order_qty_and_preserves_live_telemetry() -> None:
+    class MissingCashExecutor(PolymarketExecutionEngine):
+        def _preview(self, order_request: dict[str, Any]) -> dict[str, Any]:
+            broken = dict(order_request)
+            broken.pop("cashOrderQty", None)
+            return super()._preview(broken)
+
+    client = FakeClient(
+        markets=FakeMarkets(bid="0.96", ask="0.97"),
+        account=FakeAccount(balance=85.03, buying_power=85.03),
+    )
+    result = MissingCashExecutor(config(), client=client).execute_trade(
+        record(player="Trevor Svajda", opponent="Jakub Mensik")
+    )
+
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "preview"
+    assert "cash_order_qty is required for market order" in result.reason
+    assert result.player_price_cents == 97.0
+    assert result.best_yes_bid_cents == 96.0
+    assert result.best_yes_offer_cents == 97.0
+    assert result.stake_amount == 17.0
+    assert result.order_quantity == 17.17
 
 
 def test_preview_rejection_never_creates_order() -> None:
@@ -1738,12 +1775,12 @@ def test_order_request_uses_only_official_create_contract_fields() -> None:
         "outcomeSide",
         "action",
         "type",
-        "quantity",
+        "cashOrderQty",
         "tif",
         "slippageTolerance",
     }.issubset(request)
     assert "price" not in request
-    assert "cashOrderQty" not in request
+    assert "quantity" not in request
 
 
 def test_event_and_market_queries_use_official_sdk_filter_fields() -> None:

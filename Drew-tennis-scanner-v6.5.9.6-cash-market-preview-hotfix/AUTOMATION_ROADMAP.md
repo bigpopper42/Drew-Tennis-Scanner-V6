@@ -1,6 +1,6 @@
 # Automation Roadmap
 
-## Completed through Version 6.5.9.5
+## Completed through Version 6.5.9.6
 
 - API Tennis-first live discovery and automated decision-tree scanning
 - Polymarket US event-first moneyline resolution
@@ -8,7 +8,7 @@
 - exact 20% account-balance sizing
 - authenticated order preview, duplicate-position checks, and Discord execution reporting
 - Cloudflare/rate-limit protection
-- quantity-based market entry orders with bounded slippage and explicit YES/NO outcome validation
+- cash-sized market entry orders with bounded slippage and explicit YES/NO outcome validation
 - Supabase cycle, heartbeat, scan, and dashboard storage
 
 ## Next safety milestone: 40¢ emergency exit
@@ -27,7 +27,7 @@ Planned rule:
 - Report stop placement, activation, partial fill, full fill, and failure through Discord.
 - Backtest and dry-run the behavior before allowing live exits.
 
-**The 40¢ emergency exit is documented here but is not active in Version 6.5.9.5.**
+**The 40¢ emergency exit is documented here but is not active in Version 6.5.9.6.**
 
 ## Later milestones
 

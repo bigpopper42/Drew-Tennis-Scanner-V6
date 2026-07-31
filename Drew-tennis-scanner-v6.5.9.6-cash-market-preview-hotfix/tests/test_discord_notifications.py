@@ -196,7 +196,7 @@ def test_discord_execution_update_includes_short_no_diagnostic_trace() -> None:
 
     content = session.calls[0]["json"]["content"]
     assert "Execution: **MARKET**" in content
-    assert "Quantity: **20.74**" in content
+    assert "Estimated contracts: **20.74**" in content
     assert "Slippage cap: **3 tick(s)**" in content
     assert "YES book at submission: bid **24.0¢** · ask **76.0¢**" in content
     assert "maximum backed price **79.0¢**" in content

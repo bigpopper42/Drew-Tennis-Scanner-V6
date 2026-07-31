@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.9.5-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.9.6-Railway",
             }
         )
         return session
@@ -118,8 +118,9 @@ class DiscordNotifier:
             )
         if result.order_type:
             order_label = result.order_type.removeprefix("ORDER_TYPE_")
+            quantity_label = "Estimated contracts" if order_label == "MARKET" else "Quantity"
             details.append(
-                f"Execution: **{order_label}** · Quantity: **{result.order_quantity:g}** · "
+                f"Execution: **{order_label}** · {quantity_label}: **{result.order_quantity:g}** · "
                 f"Slippage cap: **{result.slippage_ticks} tick(s)**"
             )
         if result.best_yes_bid_cents or result.best_yes_offer_cents:

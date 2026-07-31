@@ -363,6 +363,7 @@ class PolymarketExecutionEngine:
         }
 
         execution_trace: dict[str, Any] = {}
+        error_context: dict[str, Any] = {}
         try:
             open_orders = self._read_api(
                 lambda: self._open_orders(slug),
@@ -443,6 +444,13 @@ class PolymarketExecutionEngine:
             best_yes_bid, best_yes_offer = _best_yes_prices(book)
             long_reference, player_price = _execution_prices(book, resolved.market_side)
             player_price_cents = round(float(player_price * Decimal("100")), 2)
+            error_context.update(
+                {
+                    "player_price_cents": player_price_cents,
+                    "best_yes_bid_cents": round(float(best_yes_bid * Decimal("100")), 2),
+                    "best_yes_offer_cents": round(float(best_yes_offer * Decimal("100")), 2),
+                }
+            )
             if not self.config.minimum_price_cents <= player_price_cents <= self.config.maximum_price_cents:
                 return result(
                     "REJECTED",
@@ -470,6 +478,15 @@ class PolymarketExecutionEngine:
                 or {}
             )
             stake = _stake_amount(balance, buying_power, self.config.bankroll_pct)
+            error_context.update(
+                {
+                    "account_balance": float(balance),
+                    "buying_power": float(buying_power),
+                    "stake_amount": float(stake),
+                    "minimum_trade_qty": float(minimum_qty),
+                    "tick_size": float(tick_size),
+                }
+            )
             if stake < Decimal(str(self.config.minimum_order_usd)):
                 return result(
                     "REJECTED",
@@ -486,11 +503,10 @@ class PolymarketExecutionEngine:
                 )
 
             # Market orders are the exchange-native taker path for both outcomes.
-            # The previous SHORT implementation used an undocumented cashOrderQty
-            # market request, then a synthetic IOC limit.  The official create
-            # contract instead requires quantity for market orders.  Quantity is
-            # sized at the worst permitted backed-outcome price so the order cannot
-            # spend more than the configured bankroll stake when slippage is honored.
+            # The live Polymarket US preview endpoint requires cashOrderQty for a
+            # market order.  Keep an estimated contract quantity only for sizing
+            # validation and diagnostics; the exchange derives the actual filled
+            # quantity from the cash amount and execution price.
             slippage_ticks = max(0, int(self.config.slippage_ticks))
             adverse_player_price = min(
                 Decimal("0.99"),
@@ -528,7 +544,10 @@ class PolymarketExecutionEngine:
                 "outcomeSide": expected_outcome_side,
                 "action": BUY_ACTION,
                 "type": "ORDER_TYPE_MARKET",
-                "quantity": float(estimated_quantity),
+                "cashOrderQty": {
+                    "value": f"{stake:.2f}",
+                    "currency": "USD",
+                },
                 "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
                 "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
                 "synchronousExecution": True,
@@ -544,15 +563,17 @@ class PolymarketExecutionEngine:
                     "ticks": slippage_ticks,
                 },
             }
-            execution_trace = {
-                "order_type": "ORDER_TYPE_MARKET",
-                "order_quantity": float(estimated_quantity),
-                "yes_reference_price_cents": round(float(long_reference * Decimal("100")), 2),
-                "maximum_player_price_cents": round(float(adverse_player_price * Decimal("100")), 2),
-                "best_yes_bid_cents": round(float(best_yes_bid * Decimal("100")), 2),
-                "best_yes_offer_cents": round(float(best_yes_offer * Decimal("100")), 2),
-                "slippage_ticks": slippage_ticks,
-            }
+            execution_trace.update(
+                {
+                    "order_type": "ORDER_TYPE_MARKET",
+                    "order_quantity": float(estimated_quantity),
+                    "yes_reference_price_cents": round(float(long_reference * Decimal("100")), 2),
+                    "maximum_player_price_cents": round(float(adverse_player_price * Decimal("100")), 2),
+                    "best_yes_bid_cents": round(float(best_yes_bid * Decimal("100")), 2),
+                    "best_yes_offer_cents": round(float(best_yes_offer * Decimal("100")), 2),
+                    "slippage_ticks": slippage_ticks,
+                }
+            )
 
             preview = self._preview(order_request)
             preview_order = preview.get("order") if isinstance(preview, Mapping) else None
@@ -800,8 +821,7 @@ class PolymarketExecutionEngine:
                 str(exc),
                 retryable=True,
                 failure_stage=exc.stage,
-                **execution_trace,
-                **common,
+                **{**error_context, **execution_trace, **common},
             )
         except PermanentExecutionError as exc:
             return result(
@@ -809,8 +829,7 @@ class PolymarketExecutionEngine:
                 str(exc),
                 retryable=False,
                 failure_stage=exc.stage,
-                **execution_trace,
-                **common,
+                **{**error_context, **execution_trace, **common},
             )
         except Exception as exc:
             return result(
@@ -818,8 +837,7 @@ class PolymarketExecutionEngine:
                 f"Polymarket API request failed: {_safe_exception_message(exc)}",
                 retryable=True,
                 failure_stage="api",
-                **execution_trace,
-                **common,
+                **{**error_context, **execution_trace, **common},
             )
 
     def _resolve_market(
