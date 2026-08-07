@@ -5,7 +5,7 @@ from typing import Any, Mapping
 import pytest
 
 from scanner.discord_notifier import DiscordNotificationError, DiscordNotifier
-from scanner.execution import ExecutionResult
+from scanner.execution import ExecutionResult, StopLossResult
 from scanner.worker_runtime import CycleReport, RailwayShadowWorker, WorkerConfig
 
 
@@ -90,7 +90,7 @@ def test_discord_formats_basic_trade_alert() -> None:
     assert "Current set: 5-4" in message
     assert "Game: 30-0" in message
     assert "Stability: **86.86**" in message
-    assert "Live order size: **20% of authenticated balance**" in message
+    assert "Live order size: **15% of authenticated balance**" in message
     assert "Contract: A. Michelsen vs M. Lajal" in message
     assert "Type: SPORTS_MARKET_TYPE_MONEYLINE" in message
     assert "98.0¢" in message
@@ -291,3 +291,31 @@ def test_non_trade_or_ineligible_record_is_not_queued() -> None:
     worker._queue_discord_alerts([no_trade, sample_record(eligible=False)])
 
     assert worker.pending_discord_alerts == {}
+
+
+def test_discord_formats_stop_loss_exit_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    notifier = DiscordNotifier("https://discord.com/api/webhooks/123/token")
+    sent: list[str] = []
+    monkeypatch.setattr(notifier, "_post", sent.append)
+    notifier.send_stop_loss_update(
+        StopLossResult(
+            status="EXITED",
+            reason="30¢ stop-loss triggered and the existing position close was confirmed.",
+            market_slug="aec-atp-test-one-two-2026-07-31",
+            market_side="Short / NO",
+            trigger_price_cents=30.0,
+            observed_price_cents=29.0,
+            net_position=-12.5,
+            order_id="stop-1",
+            order_state="ORDER_STATE_FILLED",
+            filled_quantity=12.5,
+            slippage_ticks=3,
+        )
+    )
+    assert len(sent) == 1
+    message = sent[0]
+    assert "STOP-LOSS EXIT CONFIRMED" in message
+    assert "Trigger: **30.0¢**" in message
+    assert "Executable backed price: **29.0¢**" in message
+    assert "Position before close: **12.5 contracts**" in message
+    assert "Order ID: `stop-1`" in message

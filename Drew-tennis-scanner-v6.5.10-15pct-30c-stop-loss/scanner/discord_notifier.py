@@ -9,7 +9,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .execution import ExecutionResult
+from .execution import ExecutionResult, StopLossResult
 
 DEFAULT_TIMEOUT = (5.0, 15.0)
 
@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.9.7-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.10-Railway",
             }
         )
         return session
@@ -146,6 +146,40 @@ class DiscordNotifier:
             details.append(f"Order ID: `{result.order_id}`")
         self._post("\n".join(details))
 
+    def send_stop_loss_update(self, result: StopLossResult) -> None:
+        if result.status == "EXITED":
+            heading = "🛡️ **POLYMARKET STOP-LOSS EXIT CONFIRMED**"
+        elif result.status == "UNFILLED":
+            heading = "⚠️ **POLYMARKET STOP-LOSS NOT FILLED**"
+        elif result.status == "PENDING":
+            heading = "⏳ **POLYMARKET STOP-LOSS STATUS UNCONFIRMED**"
+        elif result.status == "REJECTED":
+            heading = "🛑 **POLYMARKET STOP-LOSS REJECTED**"
+        else:
+            heading = "⚠️ **POLYMARKET STOP-LOSS ERROR**"
+        details = [
+            heading,
+            f"Market: `{result.market_slug or 'unknown'}` · {result.market_side or 'unknown side'}",
+            f"Status: **{result.status}**",
+            f"Reason: {result.reason}",
+            f"Trigger: **{result.trigger_price_cents:.1f}¢**",
+        ]
+        if result.observed_price_cents:
+            details.append(f"Executable backed price: **{result.observed_price_cents:.1f}¢**")
+        if result.net_position:
+            details.append(f"Position before close: **{abs(result.net_position):g} contracts**")
+        if result.slippage_ticks:
+            details.append(f"Emergency close slippage cap: **{result.slippage_ticks} tick(s)**")
+        if result.filled_quantity:
+            details.append(f"Closed contracts confirmed: **{result.filled_quantity:g}**")
+        if result.failure_stage:
+            details.append(f"Failure stage: `{result.failure_stage}`")
+        if result.order_state:
+            details.append(f"Order state: `{result.order_state}`")
+        if result.order_id:
+            details.append(f"Order ID: `{result.order_id}`")
+        self._post("\n".join(details))
+
     def _post(self, content: str) -> None:
         payload = {
             "content": str(content)[:2000],
@@ -190,7 +224,7 @@ class DiscordNotifier:
             f"✅ Break lead: {break_lead} · Serving: {serving}\n"
             f"🏁 Serving for match: {serving_for_match}\n"
             f"💪 Service points won: {service_pct}\n"
-            "💰 Live order size: **20% of authenticated balance**\n"
+            "💰 Live order size: **15% of authenticated balance**\n"
             f"🔎 {market}\n"
             f"🕒 {time_label}"
         )

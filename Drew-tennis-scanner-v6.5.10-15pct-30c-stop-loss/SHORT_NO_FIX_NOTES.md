@@ -1,4 +1,4 @@
-# SHORT/NO Fix Notes — Version 6.5.9.7
+# SHORT/NO Fix Notes — Version 6.5.10
 
 ## What each live result established
 
@@ -24,12 +24,12 @@
 - A 97¢ SHORT/NO order passed preview, received an order ID, and reached `order_status`.
 - Telemetry revealed that `slippageTolerance.currentPrice` was sent as 3¢, the inverted YES reference, instead of 97¢, the backed NO outcome price.
 
-## Version 6.5.9.7 change
+## Version 6.5.10 change
 
 The submitted SHORT/NO market order now uses:
 
 1. `ORDER_TYPE_MARKET`
-2. `cashOrderQty` equal to the exact 20% USD stake
+2. `cashOrderQty` equal to the exact 15% USD stake
 3. `ORDER_INTENT_BUY_SHORT`
 4. `OUTCOME_SIDE_NO`
 5. `ORDER_ACTION_BUY`
@@ -59,6 +59,6 @@ For the J.J. Wolf SHORT/NO attempt:
 - `EXECUTED`: at least one fill was confirmed.
 - `UNFILLED`: no quantity filled within the permitted execution range.
 
-## Stop loss
+## Current risk settings
 
-The planned 40¢ backed-outcome emergency stop remains documented but is not active in Version 6.5.9.7.
+Version 6.5.10 now uses **15%** entry sizing and an active **30¢** client-side backed-outcome stop-loss. The SHORT/NO entry changes described above remain otherwise unchanged.

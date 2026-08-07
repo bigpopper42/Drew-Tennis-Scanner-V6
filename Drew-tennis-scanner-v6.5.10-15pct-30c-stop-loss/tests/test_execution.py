@@ -240,6 +240,7 @@ class FakeOrders:
         self.preview_calls: list[dict[str, Any]] = []
         self.create_calls: list[dict[str, Any]] = []
         self.retrieve_calls: list[str] = []
+        self.close_position_calls: list[dict[str, Any]] = []
 
     def list(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self.list_calls.append(params)
@@ -273,6 +274,23 @@ class FakeOrders:
                         "action": params.get("action"),
                         "state": "ORDER_STATE_FILLED",
                         "cumQuantity": "25.64",
+                    },
+                }
+            ],
+        }
+
+    def close_position(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.close_position_calls.append(deepcopy(params))
+        return {
+            "id": "stop-close-1",
+            "executions": [
+                {
+                    "type": "EXECUTION_TYPE_FILL",
+                    "order": {
+                        "id": "stop-close-1",
+                        "marketSlug": params["marketSlug"],
+                        "state": "ORDER_STATE_FILLED",
+                        "cumQuantity": "10",
                     },
                 }
             ],
@@ -2072,3 +2090,83 @@ def test_cloudflare_1015_order_create_retries_only_definite_edge_block() -> None
 
     assert result.status == "EXECUTED"
     assert len(orders.create_calls) == 2
+
+
+def test_stop_loss_closes_long_at_exactly_thirty_cents_without_quantity() -> None:
+    portfolio = FakePortfolio(
+        {MONEYLINE_SLUG: {"netPosition": "10", "marketMetadata": {"slug": MONEYLINE_SLUG}}}
+    )
+    client = FakeClient(
+        portfolio=portfolio,
+        markets=FakeMarkets(bid="0.30", ask="0.31"),
+    )
+
+    results = engine(client, stop_loss_trigger_cents=30.0).monitor_stop_losses()
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.status == "EXITED"
+    assert result.market_side == LONG_SIDE
+    assert result.observed_price_cents == 30.0
+    assert result.trigger_price_cents == 30.0
+    request = client.orders.close_position_calls[0]
+    assert request["marketSlug"] == MONEYLINE_SLUG
+    assert "quantity" not in request
+    assert "cashOrderQty" not in request
+    assert request["manualOrderIndicator"] == "MANUAL_ORDER_INDICATOR_AUTOMATIC"
+    assert request["slippageTolerance"] == {
+        "currentPrice": {"value": "0.3", "currency": "USD"},
+        "ticks": 3,
+    }
+
+
+def test_stop_loss_closes_short_when_executable_no_bid_reaches_thirty_cents() -> None:
+    portfolio = FakePortfolio(
+        {MONEYLINE_SLUG: {"netPosition": "-10", "marketMetadata": {"slug": MONEYLINE_SLUG}}}
+    )
+    # A 70c YES offer implies a 30c executable NO bid.
+    client = FakeClient(
+        portfolio=portfolio,
+        markets=FakeMarkets(bid="0.69", ask="0.70"),
+    )
+
+    results = engine(client, stop_loss_trigger_cents=30.0).monitor_stop_losses()
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.status == "EXITED"
+    assert result.market_side == SHORT_SIDE
+    assert result.observed_price_cents == 30.0
+    request = client.orders.close_position_calls[0]
+    assert request["slippageTolerance"]["currentPrice"]["value"] == "0.3"
+    assert "quantity" not in request
+
+
+def test_stop_loss_does_not_trigger_above_thirty_cents() -> None:
+    portfolio = FakePortfolio(
+        {MONEYLINE_SLUG: {"netPosition": "10", "marketMetadata": {"slug": MONEYLINE_SLUG}}}
+    )
+    client = FakeClient(
+        portfolio=portfolio,
+        markets=FakeMarkets(bid="0.31", ask="0.32"),
+    )
+
+    results = engine(client, stop_loss_trigger_cents=30.0).monitor_stop_losses()
+
+    assert results == []
+    assert client.orders.close_position_calls == []
+
+
+def test_stop_loss_ignores_non_atp_positions() -> None:
+    other_slug = "politics-example-market-2026"
+    portfolio = FakePortfolio(
+        {other_slug: {"netPosition": "10", "marketMetadata": {"slug": other_slug}}}
+    )
+    markets = FakeMarkets(markets={other_slug: moneyline_market(slug=other_slug)}, bid="0.10", ask="0.11")
+    client = FakeClient(portfolio=portfolio, markets=markets)
+
+    results = engine(client, stop_loss_trigger_cents=30.0).monitor_stop_losses()
+
+    assert results == []
+    assert client.markets.book_calls == []
+    assert client.orders.close_position_calls == []

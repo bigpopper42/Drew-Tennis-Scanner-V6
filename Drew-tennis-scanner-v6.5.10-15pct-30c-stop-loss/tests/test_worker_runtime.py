@@ -68,7 +68,7 @@ class WorkerConfigTests(unittest.TestCase):
         self.assertTrue(config.save_all_scans)
         self.assertEqual(config.public_summary()["storage_mode"], "all_player_evaluations")
 
-    def test_legacy_bankroll_environment_value_cannot_override_locked_twenty_percent(self):
+    def test_legacy_bankroll_environment_value_cannot_override_locked_fifteen_percent(self):
         with patch.dict(
             os.environ,
             {
@@ -79,8 +79,10 @@ class WorkerConfigTests(unittest.TestCase):
             clear=True,
         ):
             config = WorkerConfig.from_env()
-        self.assertEqual(config.execution_bankroll_pct, 20.0)
-        self.assertEqual(config.public_summary()["execution_bankroll_pct"], 20.0)
+        self.assertEqual(config.execution_bankroll_pct, 15.0)
+        self.assertEqual(config.public_summary()["execution_bankroll_pct"], 15.0)
+        self.assertEqual(config.execution_stop_loss_trigger_cents, 30.0)
+        self.assertEqual(config.public_summary()["execution_stop_loss_trigger_cents"], 30.0)
 
     def test_legacy_maximum_order_environment_value_is_ignored(self):
         with patch.dict(

@@ -30,7 +30,8 @@ from .supabase_store import InsertResult, SupabaseStore
 
 TRUE_VALUES = {"1", "true", "yes", "on", "y"}
 FALSE_VALUES = {"0", "false", "no", "off", "n"}
-LOCKED_EXECUTION_BANKROLL_PCT = 20.0
+LOCKED_EXECUTION_BANKROLL_PCT = 15.0
+LOCKED_STOP_LOSS_TRIGGER_CENTS = 30.0
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -101,6 +102,8 @@ class WorkerConfig:
     execution_minimum_price_cents: float = 50.0
     execution_maximum_price_cents: float = 99.0
     execution_slippage_ticks: int = 3
+    execution_stop_loss_trigger_cents: float = LOCKED_STOP_LOSS_TRIGGER_CENTS
+    execution_stop_loss_slippage_ticks: int = 3
     execution_minimum_market_confidence: float = 80.0
     dry_run: bool = False
     worker_id: str = ""
@@ -150,7 +153,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.9.7 locks live sizing at 20%. Any legacy Railway
+            # Version 6.5.10 locks live sizing at 15%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(
@@ -231,6 +234,9 @@ class WorkerConfig:
                 self.execution_maximum_price_cents,
             ],
             "execution_slippage_ticks": self.execution_slippage_ticks,
+            "execution_stop_loss_trigger_cents": self.execution_stop_loss_trigger_cents,
+            "execution_stop_loss_slippage_ticks": self.execution_stop_loss_slippage_ticks,
+            "execution_stop_loss_mode": "client-side executable-price monitor",
             "execution_maximum_open_positions": None,
             "execution_concurrent_markets": "unlimited distinct markets",
             "execution_same_market_upgrades": False,
@@ -273,6 +279,9 @@ class CycleReport:
     execution_rejections: int = 0
     execution_pending: int = 0
     execution_errors: int = 0
+    stop_loss_triggers: int = 0
+    stop_loss_exits: int = 0
+    stop_loss_errors: int = 0
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     decision_counts: Dict[str, int] = field(default_factory=dict)
@@ -297,6 +306,9 @@ class CycleReport:
             "execution_rejections": self.execution_rejections,
             "execution_pending": self.execution_pending,
             "execution_errors": self.execution_errors,
+            "stop_loss_triggers": self.stop_loss_triggers,
+            "stop_loss_exits": self.stop_loss_exits,
+            "stop_loss_errors": self.stop_loss_errors,
             "decision_counts": dict(self.decision_counts),
             "snapshot": dict(self.snapshot_summary),
             "pipeline": dict(self.pipeline_counts),
@@ -363,6 +375,8 @@ class RailwayShadowWorker:
                     minimum_price_cents=config.execution_minimum_price_cents,
                     maximum_price_cents=config.execution_maximum_price_cents,
                     slippage_ticks=config.execution_slippage_ticks,
+                    stop_loss_trigger_cents=config.execution_stop_loss_trigger_cents,
+                    stop_loss_slippage_ticks=config.execution_stop_loss_slippage_ticks,
                     minimum_market_confidence=config.execution_minimum_market_confidence,
                 )
             )
@@ -496,6 +510,7 @@ class RailwayShadowWorker:
 
             self._queue_discord_alerts(current_records)
             self._flush_discord_alerts(report)
+            self._flush_stop_losses(report)
             self._queue_execution_signals(current_records)
             self._flush_execution_signals(report)
 
@@ -1009,6 +1024,45 @@ class RailwayShadowWorker:
                     opponent=record.get("opponent"),
                     error=str(exc),
                 )
+
+    def _flush_stop_losses(self, report: CycleReport) -> None:
+        if self.execution_engine is None:
+            return
+        try:
+            stop_results = self.execution_engine.monitor_stop_losses()
+        except Exception as exc:
+            report.stop_loss_errors += 1
+            warning = f"Stop-loss monitor failed: {exc}"
+            if warning not in report.warnings:
+                report.warnings.append(warning)
+            log_json("polymarket_stop_loss_monitor_failed", error=str(exc))
+            return
+
+        for stop_result in stop_results:
+            if stop_result.observed_price_cents > 0:
+                report.stop_loss_triggers += 1
+            if stop_result.status == "EXITED":
+                report.stop_loss_exits += 1
+                log_json("polymarket_stop_loss_exit", **stop_result.log_fields())
+            elif stop_result.status in {"FAILED", "REJECTED", "UNFILLED", "PENDING"}:
+                report.stop_loss_errors += 1
+                if stop_result.reason not in report.warnings:
+                    report.warnings.append(stop_result.reason)
+                log_json("polymarket_stop_loss_issue", **stop_result.log_fields())
+
+            if self.discord_notifier is not None:
+                try:
+                    self.discord_notifier.send_stop_loss_update(stop_result)
+                except Exception as exc:
+                    warning = f"Discord stop-loss update failed: {exc}"
+                    if warning not in report.warnings:
+                        report.warnings.append(warning)
+                    log_json(
+                        "discord_stop_loss_update_failed",
+                        market_slug=stop_result.market_slug,
+                        stop_loss_status=stop_result.status,
+                        error=str(exc),
+                    )
 
     def _queue_execution_signals(
         self, records: Sequence[Dict[str, Any]]

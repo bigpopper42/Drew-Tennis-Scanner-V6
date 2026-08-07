@@ -3,6 +3,7 @@
 from .polymarket_executor import (  # noqa: F401
     ExecutionConfig,
     ExecutionResult,
+    StopLossResult,
     LONG_SIDE,
     SHORT_SIDE,
     PolymarketExecutionEngine,
@@ -11,6 +12,7 @@ from .polymarket_executor import (  # noqa: F401
 __all__ = [
     "ExecutionConfig",
     "ExecutionResult",
+    "StopLossResult",
     "LONG_SIDE",
     "SHORT_SIDE",
     "PolymarketExecutionEngine",

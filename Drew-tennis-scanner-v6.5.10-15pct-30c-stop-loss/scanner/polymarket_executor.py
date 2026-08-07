@@ -1,12 +1,13 @@
 """Small, strict Polymarket US executor for approved tennis trade signals.
 
-The scanner decides *whether* to trade.  This module does only five things:
+The scanner decides *whether* to trade. This module handles six execution duties:
 
 1. Resolve the exact Polymarket sports event for the two players.
 2. Select the event's match-winner moneyline using structured API fields.
 3. Map the backed player to LONG/YES or SHORT/NO.
 4. Size and preview one bounded-slippage market order from authenticated buying power.
 5. Confirm the exchange order state and report it without guessing.
+6. Monitor live ATP positions and close them when the executable backed-outcome price reaches the configured stop.
 
 No fuzzy market-wide candidate harvesting is used.  Public discovery can suggest
 an event, but the authenticated market payload is the final authority.
@@ -98,11 +99,13 @@ class ExecutionClient(Protocol):
 class ExecutionConfig:
     key_id: str
     secret_key: str
-    bankroll_pct: float = 20.0
+    bankroll_pct: float = 15.0
     minimum_order_usd: float = 0.50
     minimum_price_cents: float = 50.0
     maximum_price_cents: float = 99.0
     slippage_ticks: int = 3
+    stop_loss_trigger_cents: float = 30.0
+    stop_loss_slippage_ticks: int = 3
     event_page_size: int = 100
     event_page_limit: int = 8
     order_status_attempts: int = 6
@@ -125,7 +128,7 @@ class ExecutionResult:
     market_side: str = ""
     market_question: str = ""
     market_type: str = ""
-    bankroll_pct: float = 20.0
+    bankroll_pct: float = 15.0
     account_balance: float = 0.0
     buying_power: float = 0.0
     stake_amount: float = 0.0
@@ -194,6 +197,40 @@ class ExecutionResult:
             "maximum_player_price_cents": self.maximum_player_price_cents,
             "best_yes_bid_cents": self.best_yes_bid_cents,
             "best_yes_offer_cents": self.best_yes_offer_cents,
+            "slippage_ticks": self.slippage_ticks,
+            "retryable": self.retryable,
+            "failure_stage": self.failure_stage,
+        }
+
+
+@dataclass(frozen=True)
+class StopLossResult:
+    status: str
+    reason: str
+    market_slug: str
+    market_side: str
+    trigger_price_cents: float
+    observed_price_cents: float = 0.0
+    net_position: float = 0.0
+    order_id: str = ""
+    order_state: str = ""
+    filled_quantity: float = 0.0
+    slippage_ticks: int = 0
+    retryable: bool = False
+    failure_stage: str = ""
+
+    def log_fields(self) -> dict[str, Any]:
+        return {
+            "stop_loss_status": self.status,
+            "stop_loss_reason": self.reason,
+            "market_slug": self.market_slug,
+            "market_side": self.market_side,
+            "stop_loss_trigger_cents": self.trigger_price_cents,
+            "observed_price_cents": self.observed_price_cents,
+            "net_position": self.net_position,
+            "order_id": self.order_id,
+            "order_state": self.order_state,
+            "filled_quantity": self.filled_quantity,
             "slippage_ticks": self.slippage_ticks,
             "retryable": self.retryable,
             "failure_stage": self.failure_stage,
@@ -305,6 +342,239 @@ class PolymarketExecutionEngine:
             "order_submission",
         )
 
+    def _close_position(self, close_request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Submit one reduce-only whole-position close request.
+
+        The official US SDK exposes a dedicated close_position endpoint with no
+        quantity parameter. Edge throttles are safe to retry because the request
+        was rejected before acceptance; ambiguous POST failures are not replayed
+        automatically.
+        """
+
+        attempts = max(1, int(self.config.api_read_attempts))
+        for attempt in range(attempts):
+            try:
+                self._wait_for_api_slot()
+                payload = self.client.orders.close_position(dict(close_request)) or {}
+                return payload if isinstance(payload, Mapping) else {}
+            except Exception as exc:
+                if not _is_edge_rate_limit(exc):
+                    raise
+                if attempt + 1 < attempts:
+                    self._rate_limit_delay(attempt)
+                    continue
+                raise RetryableExecutionError(
+                    "Polymarket/Cloudflare temporarily rate-limited the stop-loss close request (1015/429).",
+                    "stop_loss_submission",
+                ) from exc
+        raise RetryableExecutionError(
+            "Polymarket/Cloudflare temporarily rate-limited the stop-loss close request (1015/429).",
+            "stop_loss_submission",
+        )
+
+    def monitor_stop_losses(self) -> list[StopLossResult]:
+        """Close managed ATP positions once the executable backed price reaches the stop.
+
+        Polymarket US does not expose a native STOP order type in the current SDK,
+        so this is deliberately client-side. The worker calls it every scanner
+        cycle. The trigger uses executable bid-side value rather than last trade:
+        YES positions use the best YES bid; NO positions use 1 - best YES offer.
+        The dedicated close_position endpoint closes the existing position
+        server-side and accepts no quantity, preventing a stale quantity from
+        reversing the position.
+        """
+
+        trigger = Decimal(str(self.config.stop_loss_trigger_cents)) / Decimal("100")
+        results: list[StopLossResult] = []
+        try:
+            payload = self._read_api(
+                lambda: self.client.portfolio.positions({"limit": 100}),
+                stage="stop_loss_positions",
+                label="Polymarket stop-loss position lookup",
+            ) or {}
+        except ExecutionError as exc:
+            return [
+                StopLossResult(
+                    status="FAILED",
+                    reason=str(exc),
+                    market_slug="",
+                    market_side="",
+                    trigger_price_cents=float(self.config.stop_loss_trigger_cents),
+                    retryable=isinstance(exc, RetryableExecutionError),
+                    failure_stage=exc.stage,
+                )
+            ]
+
+        for slug, position, net_position in _iter_live_positions(payload):
+            if not _managed_atp_market_slug(slug):
+                continue
+            side = LONG_SIDE if net_position > 0 else SHORT_SIDE
+            try:
+                book = _unwrap_book(
+                    self._read_api(
+                        lambda slug=slug: self.client.markets.book(slug),
+                        stage="stop_loss_book",
+                        label=f"Polymarket stop-loss order book retrieval for {slug}",
+                    )
+                    or {}
+                )
+                if not book:
+                    raise RetryableExecutionError(
+                        "Polymarket returned no usable order book for stop-loss monitoring.",
+                        "stop_loss_book",
+                    )
+                state = str(book.get("state") or "").strip().upper()
+                if state and state not in OPEN_MARKET_STATES:
+                    continue
+                best_yes_bid, best_yes_offer = _best_yes_prices(book)
+                if side == LONG_SIDE:
+                    if best_yes_bid <= 0:
+                        continue
+                    executable_backed_price = best_yes_bid
+                else:
+                    if best_yes_offer <= 0:
+                        continue
+                    executable_backed_price = Decimal("1") - best_yes_offer
+                executable_backed_price = max(Decimal("0"), executable_backed_price)
+                if executable_backed_price > trigger:
+                    continue
+
+                observed_cents = round(float(executable_backed_price * Decimal("100")), 2)
+                close_request = {
+                    "marketSlug": slug,
+                    "manualOrderIndicator": "MANUAL_ORDER_INDICATOR_AUTOMATIC",
+                    "synchronousExecution": True,
+                    "maxBlockTime": "5",
+                    "slippageTolerance": {
+                        "currentPrice": {
+                            "value": _decimal_string(executable_backed_price),
+                            "currency": "USD",
+                        },
+                        "ticks": max(0, int(self.config.stop_loss_slippage_ticks)),
+                    },
+                }
+                try:
+                    closed = self._close_position(close_request)
+                except RetryableExecutionError as exc:
+                    results.append(
+                        StopLossResult(
+                            status="FAILED",
+                            reason=str(exc),
+                            market_slug=slug,
+                            market_side=side,
+                            trigger_price_cents=float(self.config.stop_loss_trigger_cents),
+                            observed_price_cents=observed_cents,
+                            net_position=float(net_position),
+                            slippage_ticks=max(0, int(self.config.stop_loss_slippage_ticks)),
+                            retryable=True,
+                            failure_stage=exc.stage,
+                        )
+                    )
+                    continue
+                except Exception as exc:
+                    # close_position is reduce-only by endpoint design. On an
+                    # ambiguous POST failure, do not replay immediately; the next
+                    # scanner cycle first re-reads the position and only closes a
+                    # remaining position.
+                    results.append(
+                        StopLossResult(
+                            status="PENDING",
+                            reason=(
+                                "Stop-loss close submission outcome is unknown; the next cycle will "
+                                "reconcile the remaining position before another close is attempted: "
+                                + _safe_exception_message(exc)
+                            ),
+                            market_slug=slug,
+                            market_side=side,
+                            trigger_price_cents=float(self.config.stop_loss_trigger_cents),
+                            observed_price_cents=observed_cents,
+                            net_position=float(net_position),
+                            slippage_ticks=max(0, int(self.config.stop_loss_slippage_ticks)),
+                            retryable=False,
+                            failure_stage="stop_loss_submission",
+                        )
+                    )
+                    continue
+
+                order_id = _order_id(closed)
+                verified = self._confirm_order(order_id, closed) if order_id else closed
+                status, order_state, reason, filled = _interpret_order(verified)
+                if status == "EXECUTED":
+                    stop_status = "EXITED"
+                    stop_reason = "30¢ stop-loss triggered and the existing position close was confirmed."
+                elif status == "UNFILLED":
+                    stop_status = "UNFILLED"
+                    stop_reason = (
+                        "30¢ stop-loss triggered, but the close did not fill. The remaining position "
+                        "will be checked again on the next scanner cycle."
+                    )
+                elif status == "REJECTED":
+                    stop_status = "REJECTED"
+                    stop_reason = f"30¢ stop-loss close was rejected by Polymarket: {reason}"
+                else:
+                    stop_status = "PENDING"
+                    stop_reason = (
+                        "30¢ stop-loss triggered and a close order ID was returned, but final status "
+                        "is not yet confirmed. The next cycle will reconcile the position."
+                    )
+                results.append(
+                    StopLossResult(
+                        status=stop_status,
+                        reason=stop_reason,
+                        market_slug=slug,
+                        market_side=side,
+                        trigger_price_cents=float(self.config.stop_loss_trigger_cents),
+                        observed_price_cents=observed_cents,
+                        net_position=float(net_position),
+                        order_id=order_id,
+                        order_state=order_state,
+                        filled_quantity=filled,
+                        slippage_ticks=max(0, int(self.config.stop_loss_slippage_ticks)),
+                        retryable=stop_status in {"UNFILLED", "REJECTED"},
+                        failure_stage="stop_loss_status" if stop_status != "EXITED" else "",
+                    )
+                )
+            except RetryableExecutionError as exc:
+                results.append(
+                    StopLossResult(
+                        status="FAILED",
+                        reason=str(exc),
+                        market_slug=slug,
+                        market_side=side,
+                        trigger_price_cents=float(self.config.stop_loss_trigger_cents),
+                        net_position=float(net_position),
+                        retryable=True,
+                        failure_stage=exc.stage,
+                    )
+                )
+            except PermanentExecutionError as exc:
+                results.append(
+                    StopLossResult(
+                        status="REJECTED",
+                        reason=str(exc),
+                        market_slug=slug,
+                        market_side=side,
+                        trigger_price_cents=float(self.config.stop_loss_trigger_cents),
+                        net_position=float(net_position),
+                        retryable=False,
+                        failure_stage=exc.stage,
+                    )
+                )
+            except Exception as exc:
+                results.append(
+                    StopLossResult(
+                        status="FAILED",
+                        reason=f"Stop-loss monitoring failed: {_safe_exception_message(exc)}",
+                        market_slug=slug,
+                        market_side=side,
+                        trigger_price_cents=float(self.config.stop_loss_trigger_cents),
+                        net_position=float(net_position),
+                        retryable=True,
+                        failure_stage="stop_loss",
+                    )
+                )
+        return results
+
     @staticmethod
     def signal_key(record: Mapping[str, Any]) -> str:
         event_key = str(record.get("trade_key") or record.get("event_key") or "").strip()
@@ -402,7 +672,7 @@ class PolymarketExecutionEngine:
             if _has_position(positions, slug):
                 return result(
                     "REJECTED",
-                    "A position for this exact Polymarket market already exists; a second 20% order was blocked.",
+                    f"A position for this exact Polymarket market already exists; a second {self.config.bankroll_pct:g}% order was blocked.",
                     retryable=False,
                     failure_stage="idempotency",
                     **common,
@@ -522,7 +792,7 @@ class PolymarketExecutionEngine:
             if estimated_quantity < minimum_qty:
                 return result(
                     "REJECTED",
-                    "The 20% stake cannot meet this market's minimum trade quantity.",
+                    f"The {self.config.bankroll_pct:g}% stake cannot meet this market's minimum trade quantity.",
                     retryable=True,
                     failure_stage="sizing",
                     account_balance=float(balance),
@@ -1886,6 +2156,43 @@ def _find_open_order(payload: Mapping[str, Any], slug: str) -> Mapping[str, Any]
 def _has_open_order(payload: Mapping[str, Any], slug: str) -> bool:
     """Compatibility helper retained for tests and external imports."""
     return _find_open_order(payload, slug) is not None
+
+
+def _position_slug(key: Any, position: Mapping[str, Any]) -> str:
+    metadata = position.get("marketMetadata")
+    meta_slug = metadata.get("slug") if isinstance(metadata, Mapping) else ""
+    return str(key or position.get("marketSlug") or meta_slug or "").strip()
+
+
+def _iter_live_positions(
+    payload: Mapping[str, Any],
+) -> list[tuple[str, Mapping[str, Any], Decimal]]:
+    positions = payload.get("positions") if isinstance(payload, Mapping) else None
+    if isinstance(positions, Mapping):
+        iterable = positions.items()
+    elif isinstance(positions, list):
+        iterable = (("", item) for item in positions)
+    else:
+        return []
+    rows: list[tuple[str, Mapping[str, Any], Decimal]] = []
+    for key, position in iterable:
+        if not isinstance(position, Mapping) or position.get("expired") is True:
+            continue
+        slug = _position_slug(key, position)
+        if not slug:
+            continue
+        quantity = _amount(position.get("netPositionDecimal"))
+        if quantity is None:
+            quantity = _amount(position.get("netPosition"))
+        if quantity is None or abs(quantity) <= Decimal("0.0000001"):
+            continue
+        rows.append((slug, position, quantity))
+    return rows
+
+
+def _managed_atp_market_slug(slug: str) -> bool:
+    normalized = str(slug or "").strip().casefold()
+    return bool(normalized) and ("-atp-" in normalized or normalized.startswith("atp-"))
 
 
 def _has_position(payload: Mapping[str, Any], slug: str) -> bool:
