@@ -130,7 +130,7 @@ class WorkerConfig:
             supabase_url=str(os.getenv("SUPABASE_URL") or "").strip(),
             supabase_key=supabase_key,
             timezone_name=str(os.getenv("TIMEZONE") or "America/Phoenix").strip(),
-            # Version 6.5.11 locks the production cycle at 15 seconds so the
+            # Version 6.5.12.2 locks the production cycle at 15 seconds so the
             # live scanner and client-side stop monitor are evaluated twice as often.
             # Any legacy Railway SCAN_INTERVAL_SECONDS value is intentionally ignored.
             scan_interval_seconds=LOCKED_SCAN_INTERVAL_SECONDS,
@@ -157,7 +157,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.11 restores live sizing to 20%. Any legacy Railway
+            # Version 6.5.12.2 restores live sizing to 20%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(

@@ -1,4 +1,4 @@
-# Railway Handoff — Version 6.5.11
+# Railway Handoff — Version 6.5.12.2
 
 - Cash-sized market entries use `cashOrderQty`.
 - Explicit LONG/YES and SHORT/NO direction fields are preserved.

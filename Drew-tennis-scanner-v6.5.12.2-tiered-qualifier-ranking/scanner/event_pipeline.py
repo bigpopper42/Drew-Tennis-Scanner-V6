@@ -41,6 +41,38 @@ def is_singles_event(event: Mapping[str, Any]) -> bool:
     return False
 
 
+
+
+def event_is_qualification(event: Mapping[str, Any]) -> bool:
+    """Return True when API Tennis marks or labels the event as qualifying.
+
+    API Tennis supplies ``event_qualification`` on many fixtures, but some live
+    rows communicate the same state only in the tournament/round text.  Keep
+    both paths so a missing flag cannot silently turn a qualifier into a main-
+    draw match.
+    """
+
+    raw_flag = event.get("event_qualification")
+    if isinstance(raw_flag, bool):
+        if raw_flag:
+            return True
+    elif raw_flag not in (None, ""):
+        normalized_flag = normalize_label(raw_flag)
+        if normalized_flag in {"1", "true", "yes", "y"}:
+            return True
+
+    text = normalize_label(
+        " ".join(
+            [
+                str(event.get("tournament_name") or ""),
+                str(event.get("tournament_round") or ""),
+            ]
+        )
+    )
+    return bool(
+        re.search(r"\bqualif(?:ication|ications|ying|ier|iers|y)?\b", text)
+    )
+
 def event_league(event: Mapping[str, Any]) -> str:
     text = event_type_text(event)
     if any(token in text for token in ("women", "wta", " w15", " w25", " w35", " w50", " w75", " w100")):

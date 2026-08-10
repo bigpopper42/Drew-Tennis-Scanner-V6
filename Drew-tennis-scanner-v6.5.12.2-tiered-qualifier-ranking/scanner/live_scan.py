@@ -99,6 +99,7 @@ def match_from_mapping(
         bankroll=max(0.0, _as_float(bankroll)),
         league=str(u.get("scan_league") or "Unknown"),
         competition_group=str(u.get("scan_competition_group") or "Unknown"),
+        is_qualification=bool(u.get("scan_is_qualification")),
         best_of_sets=max(3, int(_as_float(u.get("scan_best_of_sets"), 3))),
         match_closing_set=(bool(u.get("scan_match_closing_set")) if available("match_closing_set") else None),
         straight_set_closing=bool(u.get("scan_straight_set_closing")),
@@ -111,6 +112,21 @@ def match_from_mapping(
         opponent_games_in_set=optional_int("scan_opponent_games_in_set", "opponent_games_in_set"),
         current_game_score=str(u.get("scan_game_score") or "0-0"),
         completed_sets=_as_optional_int(u.get("scan_completed_sets")),
+        last_completed_game_was_break_by_backed=(
+            bool(u.get("scan_last_game_break_by_backed"))
+            if available("last_completed_game_was_break_by_backed")
+            else None
+        ),
+        current_service_game_reached_30_0=(
+            bool(u.get("scan_current_service_reached_30_0"))
+            if available("current_service_game_reached_30_0")
+            else None
+        ),
+        current_service_game_reached_40_0=(
+            bool(u.get("scan_current_service_reached_40_0"))
+            if available("current_service_game_reached_40_0")
+            else None
+        ),
         breaks_suffered_by_set=_breaks_by_set(u.get("scan_breaks_by_set")),
         breaks_suffered_total=optional_int("scan_breaks_total", "breaks_suffered_total"),
         current_set_breaks_suffered=optional_int(

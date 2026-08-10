@@ -57,7 +57,7 @@ def _one_break_confirmed(match: MatchInput, service_pct: Optional[float]) -> boo
         return True
 
     # This confirmation helper retains the service/point-score confirmation.
-    # Version 6.5.11 applies a separate minimum-games hard gate before this result
+    # Version 6.5.12.2 applies a separate minimum-games hard gate before this result
     # can make a one-break lead eligible.
     if games <= 3:
         return serving and strong_service and score in {"30-0", "40-0", "40-15"}
@@ -91,6 +91,61 @@ def evaluate_hard_rules(match: MatchInput) -> HardRuleResult:
         failed.append("Version 6.0 scans ATP Tour and Challenger singles only")
     else:
         passed.append("ATP-only competition scope passed")
+
+    # Version 6.5.12.2 qualification-volatility gate. Qualifiers use a tiered
+    # ranking rule that preserves volume while demanding a larger ranking gap
+    # when the backed player is outside the top 150:
+    #   backed 1-150   -> opponent rank does not matter;
+    #   backed 151-200 -> opponent must be ATP #450 or worse;
+    #   backed 201-250 -> opponent must be ATP #750 or worse;
+    #   backed 251+    -> blocked.
+    # Missing backed-player rank always blocks. Opponent rank is required only
+    # for the 151-250 tiers. Main-draw Tour/Challenger matches keep the existing
+    # ranking treatment.
+    if match.is_qualification:
+        if match.ranking is None:
+            failed.append(
+                "Qualification match requires a verified ATP ranking for the backed player"
+            )
+        elif match.ranking <= 150:
+            opponent_text = (
+                f"ATP #{match.opponent_ranking}" if match.opponent_ranking is not None else "opponent rank unavailable"
+            )
+            passed.append(
+                f"Qualification ranking gate passed: backed ATP #{match.ranking} (top-150 tier) vs {opponent_text}"
+            )
+        elif match.ranking <= 200:
+            if match.opponent_ranking is None:
+                failed.append(
+                    "Qualification match with backed ATP rank 151-200 requires a verified opponent ranking of 450 or worse"
+                )
+            elif match.opponent_ranking < 450:
+                failed.append(
+                    f"Qualification match blocked: backed ATP #{match.ranking} in the 151-200 tier requires opponent ATP #450 or worse (opponent is #{match.opponent_ranking})"
+                )
+            else:
+                passed.append(
+                    f"Qualification ranking gate passed: backed ATP #{match.ranking} vs opponent ATP #{match.opponent_ranking} (requires #450 or worse)"
+                )
+        elif match.ranking <= 250:
+            if match.opponent_ranking is None:
+                failed.append(
+                    "Qualification match with backed ATP rank 201-250 requires a verified opponent ranking of 750 or worse"
+                )
+            elif match.opponent_ranking < 750:
+                failed.append(
+                    f"Qualification match blocked: backed ATP #{match.ranking} in the 201-250 tier requires opponent ATP #750 or worse (opponent is #{match.opponent_ranking})"
+                )
+            else:
+                passed.append(
+                    f"Qualification ranking gate passed: backed ATP #{match.ranking} vs opponent ATP #{match.opponent_ranking} (requires #750 or worse)"
+                )
+        else:
+            failed.append(
+                "Qualification match is blocked when the backed player is ranked ATP #251 or worse"
+            )
+    else:
+        passed.append("Main-draw/non-qualification match passed qualification-volatility gate")
 
     if match.match_closing_set is True:
         passed.append("Current set is match-closing")
@@ -137,7 +192,7 @@ def evaluate_hard_rules(match: MatchInput) -> HardRuleResult:
     else:
         passed.append(f"Effective service points won is {service_pct:.1f}%")
 
-    # One-break maturity hard gate (Version 6.5.11): early breaks cannot become
+    # One-break maturity hard gate (Version 6.5.12.2): early breaks cannot become
     # tradeable merely because they were consolidated. If the backed player has
     # not been broken in the current set, they must first win at least four games
     # in that set. If they have been broken once, they must first win at least five
@@ -165,10 +220,42 @@ def evaluate_hard_rules(match: MatchInput) -> HardRuleResult:
 
         if match.backed_player_games_in_set is None or match.opponent_games_in_set is None:
             unknown.append("Current-set game score is unavailable for one-break confirmation")
-        elif _one_break_confirmed(match, service_pct):
-            passed.append("One-break lead has the required consolidation or point-score confirmation")
         else:
-            failed.append("One-break lead has not reached the required confirmation")
+            games = int(match.backed_player_games_in_set or 0)
+            fresh_break = match.last_completed_game_was_break_by_backed is True
+
+            # Version 6.5.12.2 closes the late-set consolidation loophole. If the
+            # backed player has JUST broken to reach four or five games, the
+            # lead is not considered consolidated merely because the minimum-
+            # games maturity gate is already satisfied. They must establish a
+            # dominant score in the immediately following service game.
+            if fresh_break and games in {4, 5}:
+                if match.serving is not True:
+                    failed.append(
+                        "Fresh one-break lead cannot qualify until the backed player begins the consolidation service game"
+                    )
+                elif games == 4:
+                    if match.current_service_game_reached_40_0 is True:
+                        passed.append(
+                            "Fresh break at four games consolidated by reaching 40-0 while serving for game five"
+                        )
+                    else:
+                        failed.append(
+                            "Fresh break at four games requires reaching 40-0 while serving for game five"
+                        )
+                else:  # games == 5
+                    if match.current_service_game_reached_30_0 is True:
+                        passed.append(
+                            "Fresh break at five games consolidated by reaching 30-0 while serving for game six"
+                        )
+                    else:
+                        failed.append(
+                            "Fresh break at five games requires reaching 30-0 while serving for game six"
+                        )
+            elif _one_break_confirmed(match, service_pct):
+                passed.append("One-break lead has the required consolidation or point-score confirmation")
+            else:
+                failed.append("One-break lead has not reached the required confirmation")
     elif match.break_lead is not None and match.break_lead >= 2:
         passed.append("Two-break lead is immediately mature")
 

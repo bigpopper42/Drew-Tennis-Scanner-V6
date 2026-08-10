@@ -2,7 +2,13 @@ import unittest
 from unittest.mock import patch
 
 from scanner.api_tennis import get_live_events, get_live_snapshot
-from scanner.event_pipeline import build_pipeline, event_competition_group, is_itf_m15_mens_singles, is_singles_event
+from scanner.event_pipeline import (
+    build_pipeline,
+    event_competition_group,
+    event_is_qualification,
+    is_itf_m15_mens_singles,
+    is_singles_event,
+)
 
 
 def event(key, event_type="ATP Singles", tournament="ATP 250 Phoenix Men", live="1"):
@@ -85,6 +91,23 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(result.supported_events), 1)
         self.assertEqual(result.counts["missing_pointbypoint_but_included"], 1)
         self.assertEqual(result.counts["missing_statistics_but_included"], 1)
+
+
+    def test_qualification_detected_from_api_flag(self):
+        row = event(1)
+        row["event_qualification"] = "True"
+        self.assertTrue(event_is_qualification(row))
+
+    def test_qualification_detected_from_round_text_when_flag_missing(self):
+        row = event(1)
+        row["tournament_round"] = "Astana - Qualification final"
+        self.assertTrue(event_is_qualification(row))
+
+    def test_main_draw_is_not_mislabeled_as_qualification(self):
+        row = event(1)
+        row["event_qualification"] = "False"
+        row["tournament_round"] = "Astana - 1/8-finals"
+        self.assertFalse(event_is_qualification(row))
 
     def test_large_live_list_is_not_truncated(self):
         events = [event(index) for index in range(1, 151)]

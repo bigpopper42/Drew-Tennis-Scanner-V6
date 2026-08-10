@@ -26,6 +26,7 @@ class MatchInput:
     bankroll: float = 0.0
     league: str = "Unknown"
     competition_group: str = "Unknown"
+    is_qualification: bool = False
     best_of_sets: int = 3
 
     match_closing_set: Optional[bool] = None
@@ -39,6 +40,9 @@ class MatchInput:
     opponent_games_in_set: Optional[int] = None
     current_game_score: str = "0-0"
     completed_sets: Optional[int] = None
+    last_completed_game_was_break_by_backed: Optional[bool] = None
+    current_service_game_reached_30_0: Optional[bool] = None
+    current_service_game_reached_40_0: Optional[bool] = None
 
     # Set-level and match-level stability inputs.
     breaks_suffered_by_set: List[int] = field(default_factory=list)

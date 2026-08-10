@@ -1,4 +1,4 @@
-# Polymarket US Live Execution Setup — Version 6.5.11
+# Polymarket US Live Execution Setup — Version 6.5.12.2
 
 The scanner determines whether a tennis setup qualifies. The executor independently resolves and validates the authenticated Polymarket US moneyline before placing an order.
 

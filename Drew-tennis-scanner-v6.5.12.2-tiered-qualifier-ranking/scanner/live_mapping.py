@@ -5,7 +5,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from .event_pipeline import event_competition_group, event_league, is_singles_event
+from .event_pipeline import (
+    event_competition_group,
+    event_is_qualification,
+    event_league,
+    is_singles_event,
+)
 
 ALLOWED_GAME_SCORES = {
     "0-0", "15-0", "30-0", "40-0", "0-15", "15-15", "30-15", "40-15",
@@ -288,6 +293,69 @@ def _completed_games_for_set(
             if (_game_number_from_entry(game) or 0) <= completed_count
         ]
     return rows[:completed_count]
+
+
+def _last_completed_game_was_break_by_backed(
+    event: Mapping[str, Any], side: str, set_number: int
+) -> Optional[bool]:
+    """Whether the most recently completed game created a break for the backed player.
+
+    This is used only to identify a *fresh* one-break lead that still needs to
+    be consolidated.  Returning ``None`` keeps missing point-by-point data
+    explicit rather than inventing a break sequence.
+    """
+
+    games = _completed_games_for_set(event, set_number)
+    if not games:
+        return None
+    last_game = games[-1]
+    opponent = _other_side(side)
+    return bool(
+        last_game.get("player_served") == opponent
+        and last_game.get("serve_winner") == side
+    )
+
+
+def _current_service_game_reached_score(
+    event: Mapping[str, Any], side: str, set_number: int, target: str
+) -> Optional[bool]:
+    """Return whether the current game has reached ``target`` from backed perspective.
+
+    The live top-line score is enough when it equals the target.  When the game
+    has moved past that score (for example 40-15 after previously reaching
+    40-0), point-by-point history preserves the confirmation.
+    """
+
+    if event.get("event_serve") not in {"First Player", "Second Player"}:
+        return None
+    if event.get("event_serve") != side:
+        return False
+
+    current = normalize_game_score(event.get("event_game_result"), side, False)
+    if current == target:
+        return True
+
+    first_games, second_games, found = _score_for_set(event, set_number)
+    current_game_number = first_games + second_games + 1 if found else None
+    candidates: List[Mapping[str, Any]] = []
+    for item in _current_set_entries(event, set_number):
+        if item.get("serve_winner") in {"First Player", "Second Player"}:
+            continue
+        game_number = _game_number_from_entry(item)
+        if current_game_number is not None and game_number is not None and game_number != current_game_number:
+            continue
+        candidates.append(item)
+
+    if not candidates:
+        return None
+
+    current_game = candidates[-1]
+    for point in current_game.get("points") or []:
+        if not isinstance(point, Mapping):
+            continue
+        if normalize_game_score(point.get("score"), side, False) == target:
+            return True
+    return False
 
 
 def _breaks_suffered_by_set(event: Mapping[str, Any], side: str, completed_sets: int) -> List[int]:
@@ -617,6 +685,7 @@ def build_live_scanner_mapping(
     side, player_key, opponent, opponent_key = _side_for_player(event, backed_player)
     league = event_league(event)
     group = event_competition_group(event)
+    is_qualification = event_is_qualification(event)
     set_number = _parse_set_number(event)
     period = f"set{set_number}"
     tiebreak = _is_tiebreak(event, set_number)
@@ -661,6 +730,9 @@ def build_live_scanner_mapping(
     total_breaks = _total_breaks_suffered(event, side)
     current_set_breaks = _current_set_breaks_suffered(event, side, set_number)
     breaks_by_set = _breaks_suffered_by_set(event, side, completed_sets)
+    last_game_break_by_backed = _last_completed_game_was_break_by_backed(event, side, set_number)
+    reached_30_0 = _current_service_game_reached_score(event, side, set_number, "30-0")
+    reached_40_0 = _current_service_game_reached_score(event, side, set_number, "40-0")
 
     ranking = _ranking_for_player(rankings, player_key, league)
     opponent_ranking = _ranking_for_player(rankings, opponent_key, league)
@@ -703,6 +775,7 @@ def build_live_scanner_mapping(
         "scan_event_type": str(event.get("event_type_type") or "Unknown"),
         "scan_league": league,
         "scan_competition_group": group,
+        "scan_is_qualification": is_qualification,
         "scan_surface": "Unknown",
         "scan_ranking": ranking or 0,
         "scan_opponent_ranking": opponent_ranking or 0,
@@ -718,6 +791,9 @@ def build_live_scanner_mapping(
         "scan_opponent_games_in_set": opponent_games,
         "scan_game_score": normalize_game_score(event.get("event_game_result"), side, tiebreak),
         "scan_completed_sets": completed_sets,
+        "scan_last_game_break_by_backed": last_game_break_by_backed,
+        "scan_current_service_reached_30_0": reached_30_0,
+        "scan_current_service_reached_40_0": reached_40_0,
         "scan_breaks_by_set": ",".join(str(value) for value in breaks_by_set),
         "scan_breaks_total": total_breaks if total_breaks is not None else 0,
         "scan_current_set_breaks": current_set_breaks if current_set_breaks is not None else 0,
@@ -753,6 +829,7 @@ def build_live_scanner_mapping(
     _field(statuses, "event_type", updates["scan_event_type"], "API Tennis")
     _field(statuses, "league", league, "Calculated from API Tennis event")
     _field(statuses, "competition_group", group, "Calculated from API Tennis event")
+    _field(statuses, "is_qualification", is_qualification, "event_qualification / tournament round")
     _field(statuses, "best_of_sets", best_of, "Calculated from tournament format")
     _field(statuses, "current_set", set_number, "event_status / scores")
     _field(statuses, "set_score", f"{first_games}-{second_games}", "scores", available=score_found)
@@ -769,6 +846,27 @@ def build_live_scanner_mapping(
     _field(statuses, "straight_set_closing", straight_set_closing, "Calculated from set score")
     _field(statuses, "deciding_set", deciding_set, "Calculated from set score")
     _field(statuses, "break_lead", break_lead, break_source, available=break_source != "missing")
+    _field(
+        statuses,
+        "last_completed_game_was_break_by_backed",
+        last_game_break_by_backed,
+        "Calculated from current-set point-by-point",
+        available=last_game_break_by_backed is not None,
+    )
+    _field(
+        statuses,
+        "current_service_game_reached_30_0",
+        reached_30_0,
+        "Current game score / point-by-point",
+        available=reached_30_0 is not None,
+    )
+    _field(
+        statuses,
+        "current_service_game_reached_40_0",
+        reached_40_0,
+        "Current game score / point-by-point",
+        available=reached_40_0 is not None,
+    )
     _field(statuses, "tiebreak", tiebreak, "scores / point-by-point / status")
     _field(statuses, "games_in_set", backed_games, "scores", available=score_found)
     _field(statuses, "opponent_games_in_set", opponent_games, "scores", available=score_found)
@@ -917,6 +1015,7 @@ def build_live_scanner_mapping(
         "opponent",
         "league",
         "competition_group",
+        "is_qualification",
         "current_set",
         "set_score",
         "current_game_score",

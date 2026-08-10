@@ -1,6 +1,6 @@
-# Drew Tennis Scanner Version 6.5.11
+# Drew Tennis Scanner Version 6.5.12.2
 
-Version 6.5.11 adds a stricter one-break maturity rule, restores live entry sizing to **20%** of authenticated balance, and locks the live worker cycle to **15 seconds**. The existing 30¢ client-side stop-loss and V6.5.9.7 SHORT/NO entry logic remain active.
+Version 6.5.12.2 keeps the fresh-break consolidation protection and replaces the qualifier top-150-only rule with a **tiered backed-player ranking gate**: top 150 can face anyone; 151-200 require opponent #450+; 201-250 require opponent #750+; 251+ are blocked. Live sizing remains **20%**, the worker remains locked to **15-second cycles**, and the existing 30¢ client-side stop-loss and V6.5.9.7 SHORT/NO entry path remain active.
 
 ## Scanner hard-rule change
 
@@ -35,5 +35,5 @@ This specifically blocks early one-break states created in the opening games fro
 1. Replace the GitHub repository contents with this archive.
 2. Commit and push.
 3. Redeploy Railway.
-4. Confirm startup reports Version `6.5.11`, scan interval `15`, execution sizing `20%`, and stop trigger `30¢`.
+4. Confirm startup reports Version `6.5.12.2`, scan interval `15`, execution sizing `20%`, and stop trigger `30¢`.
 5. No Supabase migration is required.
