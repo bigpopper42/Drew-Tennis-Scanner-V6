@@ -68,19 +68,22 @@ class WorkerConfigTests(unittest.TestCase):
         self.assertTrue(config.save_all_scans)
         self.assertEqual(config.public_summary()["storage_mode"], "all_player_evaluations")
 
-    def test_legacy_bankroll_environment_value_cannot_override_locked_fifteen_percent(self):
+    def test_legacy_bankroll_and_scan_interval_cannot_override_locked_production_values(self):
         with patch.dict(
             os.environ,
             {
                 "API_TENNIS_KEY": "api-key",
                 "DRY_RUN": "true",
                 "EXECUTION_BANKROLL_PCT": "10",
+                "SCAN_INTERVAL_SECONDS": "30",
             },
             clear=True,
         ):
             config = WorkerConfig.from_env()
-        self.assertEqual(config.execution_bankroll_pct, 15.0)
-        self.assertEqual(config.public_summary()["execution_bankroll_pct"], 15.0)
+        self.assertEqual(config.execution_bankroll_pct, 20.0)
+        self.assertEqual(config.public_summary()["execution_bankroll_pct"], 20.0)
+        self.assertEqual(config.scan_interval_seconds, 15)
+        self.assertEqual(config.public_summary()["scan_interval_seconds"], 15)
         self.assertEqual(config.execution_stop_loss_trigger_cents, 30.0)
         self.assertEqual(config.public_summary()["execution_stop_loss_trigger_cents"], 30.0)
 

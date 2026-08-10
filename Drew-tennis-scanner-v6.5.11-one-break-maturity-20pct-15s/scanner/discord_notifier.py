@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.10-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.11-Railway",
             }
         )
         return session
@@ -224,7 +224,7 @@ class DiscordNotifier:
             f"✅ Break lead: {break_lead} · Serving: {serving}\n"
             f"🏁 Serving for match: {serving_for_match}\n"
             f"💪 Service points won: {service_pct}\n"
-            "💰 Live order size: **15% of authenticated balance**\n"
+            "💰 Live order size: **20% of authenticated balance**\n"
             f"🔎 {market}\n"
             f"🕒 {time_label}"
         )

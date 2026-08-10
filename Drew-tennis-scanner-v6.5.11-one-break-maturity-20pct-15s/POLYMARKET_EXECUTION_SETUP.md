@@ -1,10 +1,10 @@
-# Polymarket US Live Execution Setup — Version 6.5.10
+# Polymarket US Live Execution Setup — Version 6.5.11
 
 The scanner determines whether a tennis setup qualifies. The executor independently resolves and validates the authenticated Polymarket US moneyline before placing an order.
 
 ## Locked entry behavior
 
-- Stake: exactly **15%** of authenticated `currentBalance`, rounded down to cents and limited by buying power.
+- Stake: exactly **20%** of authenticated `currentBalance`, rounded down to cents and limited by buying power.
 - Submitted market amount: `cashOrderQty` in USD.
 - Fixed dollar cap: none in scanner code.
 - Distinct markets: may be open simultaneously.
@@ -32,7 +32,7 @@ For SHORT/NO entries, `slippageTolerance.currentPrice` is the backed NO price. T
 - Submitted close request intentionally contains no local position quantity.
 - Exit slippage protection: 3 ticks.
 - Scope: authenticated open ATP positions.
-- Frequency: once per worker/scanner cycle (30 seconds by default).
+- Frequency: once per worker/scanner cycle (15 seconds).
 - Restart behavior: positions are rediscovered from the authenticated portfolio.
 
 Because the SDK does not expose a native STOP order type, Railway must be running for this protection to operate. A rapid move can execute materially below 30¢ before the next cycle/close.
@@ -50,7 +50,7 @@ EXECUTION_MAX_PRICE_CENTS=99
 EXECUTION_SLIPPAGE_TICKS=3
 ```
 
-The production bankroll percentage and stop trigger are locked in code at 15% and 30¢ in this release.
+The production bankroll percentage and stop trigger are locked in code at 20% and 30¢ in this release.
 
 ## Disable live execution
 

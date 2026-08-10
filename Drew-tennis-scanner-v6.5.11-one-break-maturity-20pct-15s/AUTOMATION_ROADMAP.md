@@ -1,11 +1,11 @@
 # Automation Roadmap
 
-## Completed through Version 6.5.10
+## Completed through Version 6.5.11
 
 - API Tennis-first live discovery and automated decision-tree scanning
 - Polymarket US event-first moneyline resolution
 - live LONG/YES and SHORT/NO execution path
-- exact **15%** account-balance entry sizing
+- exact **20%** account-balance entry sizing
 - authenticated order preview, duplicate-position checks, and Discord execution reporting
 - Cloudflare/rate-limit protection
 - cash-sized market entry orders with bounded slippage and explicit YES/NO outcome validation
@@ -27,5 +27,7 @@
 1. Collect full LONG + SHORT live execution data.
 2. Add liquidity-aware sizing before individual orders become large enough to move through multiple price levels.
 3. Add complete realized P&L and bankroll analytics.
-4. Review whether 15% sizing and the 30¢ stop are optimal after a meaningful trade sample.
+4. Review whether 20% sizing and the 30¢ stop are optimal after a meaningful trade sample.
 5. Analyze performance by side, entry price, score state, tournament level, and scanner rule.
+
+- Version 6.5.11: one-break maturity gate (4 games unbroken / 5 games after a break), 20% sizing, and 15-second cycle.

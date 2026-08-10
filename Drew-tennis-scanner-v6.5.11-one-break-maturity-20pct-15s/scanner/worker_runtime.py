@@ -30,8 +30,9 @@ from .supabase_store import InsertResult, SupabaseStore
 
 TRUE_VALUES = {"1", "true", "yes", "on", "y"}
 FALSE_VALUES = {"0", "false", "no", "off", "n"}
-LOCKED_EXECUTION_BANKROLL_PCT = 15.0
+LOCKED_EXECUTION_BANKROLL_PCT = 20.0
 LOCKED_STOP_LOSS_TRIGGER_CENTS = 30.0
+LOCKED_SCAN_INTERVAL_SECONDS = 15
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -79,7 +80,7 @@ class WorkerConfig:
     supabase_url: str
     supabase_key: str
     timezone_name: str = "America/Phoenix"
-    scan_interval_seconds: int = 30
+    scan_interval_seconds: int = LOCKED_SCAN_INTERVAL_SECONDS
     fixtures_fallback_interval_seconds: int = 300
     rankings_refresh_seconds: int = 21600
     market_cache_ttl_seconds: int = 1800
@@ -129,7 +130,10 @@ class WorkerConfig:
             supabase_url=str(os.getenv("SUPABASE_URL") or "").strip(),
             supabase_key=supabase_key,
             timezone_name=str(os.getenv("TIMEZONE") or "America/Phoenix").strip(),
-            scan_interval_seconds=_env_int("SCAN_INTERVAL_SECONDS", 30, 15, 3600),
+            # Version 6.5.11 locks the production cycle at 15 seconds so the
+            # live scanner and client-side stop monitor are evaluated twice as often.
+            # Any legacy Railway SCAN_INTERVAL_SECONDS value is intentionally ignored.
+            scan_interval_seconds=LOCKED_SCAN_INTERVAL_SECONDS,
             fixtures_fallback_interval_seconds=_env_int(
                 "FIXTURES_FALLBACK_INTERVAL_SECONDS", 300, 60, 86400
             ),
@@ -153,7 +157,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.10 locks live sizing at 15%. Any legacy Railway
+            # Version 6.5.11 restores live sizing to 20%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(

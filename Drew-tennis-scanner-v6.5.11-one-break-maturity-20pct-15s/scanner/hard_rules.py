@@ -56,8 +56,9 @@ def _one_break_confirmed(match: MatchInput, service_pct: Optional[float]) -> boo
     if games - opponent_games >= 2:
         return True
 
-    # Early one-break leads (1-0, 2-1, 3-2) normally need the hold. The locked
-    # exception is strong service plus a 30-0-or-better point position.
+    # This confirmation helper retains the service/point-score confirmation.
+    # Version 6.5.11 applies a separate minimum-games hard gate before this result
+    # can make a one-break lead eligible.
     if games <= 3:
         return serving and strong_service and score in {"30-0", "40-0", "40-15"}
 
@@ -136,9 +137,32 @@ def evaluate_hard_rules(match: MatchInput) -> HardRuleResult:
     else:
         passed.append(f"Effective service points won is {service_pct:.1f}%")
 
-    # Two-break leads are immediately mature. One-break leads require the exact
-    # consolidation/point-score confirmation locked in the final questionnaire.
+    # One-break maturity hard gate (Version 6.5.11): early breaks cannot become
+    # tradeable merely because they were consolidated. If the backed player has
+    # not been broken in the current set, they must first win at least four games
+    # in that set. If they have been broken once, they must first win at least five
+    # games. The existing consolidation/point-score confirmation still applies
+    # after this minimum-game gate. Two-break leads remain immediately mature.
     if match.break_lead == 1:
+        games = match.backed_player_games_in_set
+        if games is None:
+            unknown.append("Current-set games won is unavailable for one-break maturity rule")
+        elif current_breaks is None:
+            if not fallback:
+                unknown.append("Current-set break history is unavailable for one-break maturity rule")
+        else:
+            minimum_games = 5 if current_breaks >= 1 else 4
+            if games < minimum_games:
+                failed.append(
+                    f"One-break lead requires at least {minimum_games} games won in the current set "
+                    f"when the backed player has been broken {current_breaks} time(s)"
+                )
+            else:
+                passed.append(
+                    f"One-break maturity gate passed: {games} current-set games won "
+                    f"with {current_breaks} break(s) suffered"
+                )
+
         if match.backed_player_games_in_set is None or match.opponent_games_in_set is None:
             unknown.append("Current-set game score is unavailable for one-break confirmation")
         elif _one_break_confirmed(match, service_pct):

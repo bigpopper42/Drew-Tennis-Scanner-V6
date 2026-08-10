@@ -90,7 +90,7 @@ def test_discord_formats_basic_trade_alert() -> None:
     assert "Current set: 5-4" in message
     assert "Game: 30-0" in message
     assert "Stability: **86.86**" in message
-    assert "Live order size: **15% of authenticated balance**" in message
+    assert "Live order size: **20% of authenticated balance**" in message
     assert "Contract: A. Michelsen vs M. Lajal" in message
     assert "Type: SPORTS_MARKET_TYPE_MONEYLINE" in message
     assert "98.0¢" in message

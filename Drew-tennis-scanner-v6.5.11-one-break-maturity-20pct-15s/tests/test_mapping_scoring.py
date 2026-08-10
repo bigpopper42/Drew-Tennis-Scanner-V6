@@ -154,5 +154,69 @@ class ScoreAndOptionalTests(unittest.TestCase):
         self.assertLess(decision.scoring_completeness_pct, 100)
 
 
+class OneBreakMaturityRuleTests(unittest.TestCase):
+    def test_one_break_three_games_unbroken_is_blocked(self):
+        match = eligible_match(
+            break_lead=1,
+            backed_player_games_in_set=3,
+            opponent_games_in_set=1,
+            current_set_breaks_suffered=0,
+            serving=True,
+            current_game_score="40-0",
+        )
+        decision = evaluate_match(match)
+        self.assertEqual(decision.status, "NO TRADE")
+        self.assertTrue(any("requires at least 4 games won" in item for item in decision.concerns))
+
+    def test_one_break_four_games_unbroken_can_pass_maturity_gate(self):
+        match = eligible_match(
+            break_lead=1,
+            backed_player_games_in_set=4,
+            opponent_games_in_set=2,
+            current_set_breaks_suffered=0,
+            serving=True,
+            current_game_score="40-0",
+        )
+        decision = evaluate_match(match)
+        self.assertEqual(decision.status, "TRADE")
+        self.assertTrue(any("One-break maturity gate passed" in item for item in decision.passed))
+
+    def test_one_break_four_games_after_being_broken_once_is_blocked(self):
+        match = eligible_match(
+            break_lead=1,
+            backed_player_games_in_set=4,
+            opponent_games_in_set=2,
+            current_set_breaks_suffered=1,
+            serving=True,
+            current_game_score="40-0",
+        )
+        decision = evaluate_match(match)
+        self.assertEqual(decision.status, "NO TRADE")
+        self.assertTrue(any("requires at least 5 games won" in item for item in decision.concerns))
+
+    def test_one_break_five_games_after_being_broken_once_can_pass_maturity_gate(self):
+        match = eligible_match(
+            break_lead=1,
+            backed_player_games_in_set=5,
+            opponent_games_in_set=3,
+            current_set_breaks_suffered=1,
+            serving=True,
+            current_game_score="40-0",
+        )
+        decision = evaluate_match(match)
+        self.assertEqual(decision.status, "TRADE")
+        self.assertTrue(any("One-break maturity gate passed" in item for item in decision.passed))
+
+    def test_two_break_lead_is_not_delayed_by_new_one_break_rule(self):
+        match = eligible_match(
+            break_lead=2,
+            backed_player_games_in_set=2,
+            opponent_games_in_set=0,
+            current_set_breaks_suffered=0,
+        )
+        decision = evaluate_match(match)
+        self.assertEqual(decision.status, "TRADE")
+
+
 if __name__ == "__main__":
     unittest.main()

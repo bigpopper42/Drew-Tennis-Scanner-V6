@@ -1,4 +1,4 @@
-# Railway Worker Setup — Version 6.5.10
+# Railway Worker Setup — Version 6.5.11
 
 This worker scans live tennis, stores shadow diagnostics, sends Discord alerts,
 and can place guarded Polymarket US orders when live execution is explicitly
@@ -67,7 +67,7 @@ API_TENNIS_KEY=YOUR_API_TENNIS_KEY
 SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 SUPABASE_SECRET_KEY=YOUR_SB_SECRET_KEY
 TIMEZONE=America/Phoenix
-SCAN_INTERVAL_SECONDS=30
+SCAN_INTERVAL_SECONDS=15
 SHADOW_BANKROLL=100
 DRY_RUN=false
 SAVE_ALL_SCANS=true
@@ -150,7 +150,7 @@ limit 50;
 - Put Polymarket credentials only in Railway Variables, never GitHub.
 - Keep `POLYMARKET_EXECUTION_ENABLED=false` until all variables in
   `POLYMARKET_EXECUTION_SETUP.md` are installed and reviewed.
-- Do not use Railway Cron. Railway cron cannot run every 30 seconds and is not intended for continuous live scanning.
+- Do not use Railway Cron. Railway cron cannot run every 15 seconds and is not intended for continuous live scanning.
 - The worker caches market matches, refreshes rankings slowly, retries unmatched markets, and deduplicates unchanged match states before writing to Supabase.
 
 

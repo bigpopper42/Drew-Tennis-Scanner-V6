@@ -99,7 +99,7 @@ class ExecutionClient(Protocol):
 class ExecutionConfig:
     key_id: str
     secret_key: str
-    bankroll_pct: float = 15.0
+    bankroll_pct: float = 20.0
     minimum_order_usd: float = 0.50
     minimum_price_cents: float = 50.0
     maximum_price_cents: float = 99.0
@@ -128,7 +128,7 @@ class ExecutionResult:
     market_side: str = ""
     market_question: str = ""
     market_type: str = ""
-    bankroll_pct: float = 15.0
+    bankroll_pct: float = 20.0
     account_balance: float = 0.0
     buying_power: float = 0.0
     stake_amount: float = 0.0

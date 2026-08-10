@@ -1,4 +1,4 @@
-# 30¢ Stop-Loss Implementation — Version 6.5.10
+# 30¢ Stop-Loss Implementation — Version 6.5.11
 
 ## Rule
 
@@ -18,7 +18,7 @@ The current Polymarket US SDK exposes LIMIT and MARKET order types, not a native
 
 ## Timing
 
-The monitor runs once per worker cycle before new entry attempts. Default `SCAN_INTERVAL_SECONDS` is 30, so the stop is checked about every 30 seconds under the default deployment. It is not guaranteed to execute at exactly 30¢; a fast tennis market may move below the trigger between checks or while the close is routing.
+The monitor runs once per worker cycle before new entry attempts. Default `SCAN_INTERVAL_SECONDS` is 30, so the stop is checked about every 15 seconds under the default deployment. It is not guaranteed to execute at exactly 30¢; a fast tennis market may move below the trigger between checks or while the close is routing.
 
 ## Restart behavior and scope
 
