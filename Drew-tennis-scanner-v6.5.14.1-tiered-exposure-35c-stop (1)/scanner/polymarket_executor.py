@@ -99,12 +99,17 @@ class ExecutionClient(Protocol):
 class ExecutionConfig:
     key_id: str
     secret_key: str
-    bankroll_pct: float = 20.0
+    # Tiered target exposure. One-break trades start at 15% of bankroll;
+    # two-or-more-break trades target 25% total exposure.
+    one_break_bankroll_pct: float = 15.0
+    two_break_bankroll_pct: float = 25.0
+    # Compatibility alias retained for older callers; tiered sizing below is authoritative.
+    bankroll_pct: float = 15.0
     minimum_order_usd: float = 0.50
     minimum_price_cents: float = 50.0
     maximum_price_cents: float = 99.0
     slippage_ticks: int = 3
-    stop_loss_trigger_cents: float = 30.0
+    stop_loss_trigger_cents: float = 35.0
     stop_loss_slippage_ticks: int = 3
     event_page_size: int = 100
     event_page_limit: int = 8
@@ -128,7 +133,7 @@ class ExecutionResult:
     market_side: str = ""
     market_question: str = ""
     market_type: str = ""
-    bankroll_pct: float = 20.0
+    bankroll_pct: float = 15.0
     account_balance: float = 0.0
     buying_power: float = 0.0
     stake_amount: float = 0.0
@@ -150,6 +155,10 @@ class ExecutionResult:
     slippage_ticks: int = 0
     retryable: bool = False
     failure_stage: str = ""
+    target_exposure_pct: float = 0.0
+    existing_exposure_amount: float = 0.0
+    target_exposure_amount: float = 0.0
+    position_upgrade: bool = False
 
     @property
     def order_created(self) -> bool:
@@ -200,6 +209,10 @@ class ExecutionResult:
             "slippage_ticks": self.slippage_ticks,
             "retryable": self.retryable,
             "failure_stage": self.failure_stage,
+            "target_exposure_pct": self.target_exposure_pct,
+            "existing_exposure_amount": self.existing_exposure_amount,
+            "target_exposure_amount": self.target_exposure_amount,
+            "position_upgrade": self.position_upgrade,
         }
 
 
@@ -499,22 +512,23 @@ class PolymarketExecutionEngine:
                 order_id = _order_id(closed)
                 verified = self._confirm_order(order_id, closed) if order_id else closed
                 status, order_state, reason, filled = _interpret_order(verified)
+                trigger_label = f"{self.config.stop_loss_trigger_cents:g}¢"
                 if status == "EXECUTED":
                     stop_status = "EXITED"
-                    stop_reason = "30¢ stop-loss triggered and the existing position close was confirmed."
+                    stop_reason = f"{trigger_label} stop-loss triggered and the existing position close was confirmed."
                 elif status == "UNFILLED":
                     stop_status = "UNFILLED"
                     stop_reason = (
-                        "30¢ stop-loss triggered, but the close did not fill. The remaining position "
+                        f"{trigger_label} stop-loss triggered, but the close did not fill. The remaining position "
                         "will be checked again on the next scanner cycle."
                     )
                 elif status == "REJECTED":
                     stop_status = "REJECTED"
-                    stop_reason = f"30¢ stop-loss close was rejected by Polymarket: {reason}"
+                    stop_reason = f"{trigger_label} stop-loss close was rejected by Polymarket: {reason}"
                 else:
                     stop_status = "PENDING"
                     stop_reason = (
-                        "30¢ stop-loss triggered and a close order ID was returned, but final status "
+                        f"{trigger_label} stop-loss triggered and a close order ID was returned, but final status "
                         "is not yet confirmed. The next cycle will reconcile the position."
                     )
                 results.append(
@@ -605,13 +619,27 @@ class PolymarketExecutionEngine:
         if not player or not opponent or _normalize_name(player) == _normalize_name(opponent):
             return result("REJECTED", "Scanner signal does not contain two different players.", failure_stage="input")
 
-        # Version 6.5.13 execution fail-safe.  The scanner is the primary decision
+        # Version 6.5.14 execution fail-safe.  The scanner is the primary decision
         # authority, but Polymarket must never receive an immature one-break
         # signal even if an upstream mapping/decision regression marks it TRADE.
         try:
             break_lead = int(record.get("break_lead")) if record.get("break_lead") is not None else None
         except (TypeError, ValueError):
             break_lead = None
+        if break_lead is None or break_lead < 1:
+            return result(
+                "REJECTED",
+                "Execution safety gate requires at least a one-break lead for tiered sizing.",
+                failure_stage="match_state_safety",
+            )
+        target_exposure_pct = (
+            float(self.config.one_break_bankroll_pct)
+            if break_lead == 1
+            else float(self.config.two_break_bankroll_pct)
+        )
+        # Report the authoritative tier target, not the deprecated flat-size alias.
+        base["bankroll_pct"] = target_exposure_pct
+        base["target_exposure_pct"] = target_exposure_pct
         if break_lead == 1:
             try:
                 games_in_set = int(record.get("backed_player_games_in_set"))
@@ -691,40 +719,63 @@ class PolymarketExecutionEngine:
                 label=f"Polymarket open-order lookup for {slug}",
             )
             existing_order = _find_exposure_order(open_orders, slug)
+            filled_existing_order: Mapping[str, Any] | None = None
             if existing_order is not None:
                 prior_status, prior_state, _prior_reason, prior_filled = _interpret_order(existing_order)
+                # A genuinely pending order is always an idempotency boundary. A
+                # historical filled order is allowed to coexist with a live
+                # position because a later two-break signal may legitimately
+                # increase that position to the higher target exposure.
                 if prior_status == "EXECUTED":
+                    filled_existing_order = existing_order
+                else:
                     return result(
-                        "REJECTED",
-                        "A filled order already exists for this exact Polymarket market; duplicate exposure was blocked.",
+                        "PENDING",
+                        "An order for this exact Polymarket market is already pending; no duplicate was submitted.",
                         retryable=False,
                         failure_stage="idempotency",
                         order_id=_order_id(existing_order),
                         order_state=prior_state,
-                        filled_quantity=prior_filled,
                         **common,
                     )
-                return result(
-                    "PENDING",
-                    "An order for this exact Polymarket market is already pending; no duplicate was submitted.",
-                    retryable=False,
-                    failure_stage="idempotency",
-                    order_id=_order_id(existing_order),
-                    order_state=prior_state,
-                    **common,
-                )
 
             positions = self._read_api(
                 lambda: self._positions(slug),
                 stage="idempotency",
                 label=f"Polymarket position lookup for {slug}",
             )
-            if _has_position(positions, slug):
+            existing_position = _find_position(positions, slug)
+            existing_position_cost = Decimal("0")
+            existing_net_position = Decimal("0")
+            if existing_position is not None:
+                existing_position_cost = _position_cost(existing_position)
+                existing_net_position = _position_quantity(existing_position) or Decimal("0")
+                expected_long = resolved.market_side == LONG_SIDE
+                if (existing_net_position > 0) != expected_long:
+                    return result(
+                        "REJECTED",
+                        "An existing position is on the opposite outcome; tier upgrade was blocked.",
+                        retryable=False,
+                        failure_stage="idempotency",
+                        **common,
+                    )
+                if break_lead == 1:
+                    return result(
+                        "REJECTED",
+                        "The one-break target position already exists; no duplicate one-break order was submitted.",
+                        retryable=False,
+                        failure_stage="target_exposure",
+                        existing_exposure_amount=float(existing_position_cost),
+                        **common,
+                    )
+            elif filled_existing_order is not None:
                 return result(
                     "REJECTED",
-                    f"A position for this exact Polymarket market already exists; a second {self.config.bankroll_pct:g}% order was blocked.",
-                    retryable=False,
+                    "A filled order exists but the live position is not visible yet; duplicate/upgrade submission was blocked until portfolio state reconciles.",
+                    retryable=True,
                     failure_stage="idempotency",
+                    order_id=_order_id(filled_existing_order),
+                    order_state=str(filled_existing_order.get("state") or ""),
                     **common,
                 )
 
@@ -734,11 +785,11 @@ class PolymarketExecutionEngine:
                 label=f"Polymarket trade-activity lookup for {slug}",
             )
             prior_trade = _find_trade_activity(activities, slug)
-            if prior_trade is not None:
+            if prior_trade is not None and existing_position is None:
                 return result(
                     "REJECTED",
-                    "A prior trade execution already exists for this exact Polymarket market; duplicate exposure was blocked.",
-                    retryable=False,
+                    "A prior trade execution exists but no live position is visible yet; duplicate/upgrade submission was blocked until portfolio state reconciles.",
+                    retryable=True,
                     failure_stage="idempotency",
                     filled_quantity=float(_trade_quantity(prior_trade) or Decimal("0")),
                     **common,
@@ -797,23 +848,51 @@ class PolymarketExecutionEngine:
                 )
                 or {}
             )
-            stake = _stake_amount(balance, buying_power, self.config.bankroll_pct)
+            # For an upgrade, restore this market's existing cost basis to the
+            # cash balance to approximate the bankroll before the first entry.
+            # This makes a 15% initial position upgrade to 25% by adding ~10%,
+            # rather than incorrectly taking 25% of only the remaining cash.
+            bankroll_basis = balance + existing_position_cost
+            target_exposure_amount = (
+                bankroll_basis * Decimal(str(target_exposure_pct)) / Decimal("100")
+            ).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            required_add = max(Decimal("0"), target_exposure_amount - existing_position_cost)
+            stake = min(required_add, buying_power).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+            position_upgrade = existing_position is not None
             error_context.update(
                 {
-                    "account_balance": float(balance),
+                    "account_balance": float(bankroll_basis),
                     "buying_power": float(buying_power),
                     "stake_amount": float(stake),
                     "minimum_trade_qty": float(minimum_qty),
                     "tick_size": float(tick_size),
+                    "existing_exposure_amount": float(existing_position_cost),
+                    "target_exposure_amount": float(target_exposure_amount),
+                    "position_upgrade": position_upgrade,
                 }
             )
+            if required_add <= Decimal("0.005"):
+                return result(
+                    "REJECTED",
+                    f"Position already meets the {target_exposure_pct:g}% target exposure; no additional order was submitted.",
+                    retryable=False,
+                    failure_stage="target_exposure",
+                    account_balance=float(bankroll_basis),
+                    buying_power=float(buying_power),
+                    stake_amount=0.0,
+                    player_price_cents=player_price_cents,
+                    existing_exposure_amount=float(existing_position_cost),
+                    target_exposure_amount=float(target_exposure_amount),
+                    position_upgrade=position_upgrade,
+                    **common,
+                )
             if stake < Decimal(str(self.config.minimum_order_usd)):
                 return result(
                     "REJECTED",
-                    f"Calculated {self.config.bankroll_pct:g}% stake is below the minimum live order.",
+                    f"Calculated add-on needed to reach the {target_exposure_pct:g}% target is below the minimum live order.",
                     retryable=True,
                     failure_stage="sizing",
-                    account_balance=float(balance),
+                    account_balance=float(bankroll_basis),
                     buying_power=float(buying_power),
                     stake_amount=float(stake),
                     player_price_cents=player_price_cents,
@@ -842,10 +921,10 @@ class PolymarketExecutionEngine:
             if estimated_quantity < minimum_qty:
                 return result(
                     "REJECTED",
-                    f"The {self.config.bankroll_pct:g}% stake cannot meet this market's minimum trade quantity.",
+                    f"The add-on needed to reach the {target_exposure_pct:g}% target cannot meet this market's minimum trade quantity.",
                     retryable=True,
                     failure_stage="sizing",
-                    account_balance=float(balance),
+                    account_balance=float(bankroll_basis),
                     buying_power=float(buying_power),
                     stake_amount=float(stake),
                     player_price_cents=player_price_cents,
@@ -893,6 +972,9 @@ class PolymarketExecutionEngine:
             }
             execution_trace.update(
                 {
+                    "existing_exposure_amount": float(existing_position_cost),
+                    "target_exposure_amount": float(target_exposure_amount),
+                    "position_upgrade": position_upgrade,
                     "order_type": "ORDER_TYPE_MARKET",
                     "order_quantity": float(estimated_quantity),
                     "yes_reference_price_cents": round(float(long_reference * Decimal("100")), 2),
@@ -931,7 +1013,7 @@ class PolymarketExecutionEngine:
                         preview_status, preview_state, preview_reason, 0.0
                     ),
                     failure_stage="preview",
-                    account_balance=float(balance),
+                    account_balance=float(bankroll_basis),
                     buying_power=float(buying_power),
                     stake_amount=float(stake),
                     player_price_cents=player_price_cents,
@@ -950,7 +1032,7 @@ class PolymarketExecutionEngine:
                     str(create_error),
                     retryable=True,
                     failure_stage=create_error.stage,
-                    account_balance=float(balance),
+                    account_balance=float(bankroll_basis),
                     buying_power=float(buying_power),
                     stake_amount=float(stake),
                     player_price_cents=player_price_cents,
@@ -966,7 +1048,7 @@ class PolymarketExecutionEngine:
                         f"Polymarket rejected the order request before accepting it: {_safe_exception_message(create_error)}",
                         retryable=False,
                         failure_stage="order_submission",
-                        account_balance=float(balance),
+                        account_balance=float(bankroll_basis),
                         buying_power=float(buying_power),
                         stake_amount=float(stake),
                         player_price_cents=player_price_cents,
@@ -1009,7 +1091,7 @@ class PolymarketExecutionEngine:
                         order_id=_order_id(recovered_order),
                         order_state=recovered_state,
                         filled_quantity=recovered_filled,
-                        account_balance=float(balance),
+                        account_balance=float(bankroll_basis),
                         buying_power=float(buying_power),
                         stake_amount=float(stake),
                         player_price_cents=player_price_cents,
@@ -1037,7 +1119,7 @@ class PolymarketExecutionEngine:
                         "Order submission response was interrupted, but a position appeared for this market.",
                         retryable=False,
                         failure_stage="order_submission",
-                        account_balance=float(balance),
+                        account_balance=float(bankroll_basis),
                         buying_power=float(buying_power),
                         stake_amount=float(stake),
                         player_price_cents=player_price_cents,
@@ -1067,7 +1149,7 @@ class PolymarketExecutionEngine:
                         retryable=False,
                         failure_stage="order_submission",
                         filled_quantity=float(recovered_qty),
-                        account_balance=float(balance),
+                        account_balance=float(bankroll_basis),
                         buying_power=float(buying_power),
                         stake_amount=float(stake),
                         player_price_cents=player_price_cents,
@@ -1088,7 +1170,7 @@ class PolymarketExecutionEngine:
                     "to prevent a duplicate order." + reconciliation_note,
                     retryable=False,
                     failure_stage="order_submission",
-                    account_balance=float(balance),
+                    account_balance=float(bankroll_basis),
                     buying_power=float(buying_power),
                     stake_amount=float(stake),
                     player_price_cents=player_price_cents,
@@ -1131,7 +1213,7 @@ class PolymarketExecutionEngine:
                 reason,
                 retryable=retryable,
                 failure_stage="order_status" if retryable else "",
-                account_balance=float(balance),
+                account_balance=float(bankroll_basis),
                 buying_power=float(buying_power),
                 stake_amount=float(stake),
                 player_price_cents=player_price_cents,
@@ -2245,28 +2327,42 @@ def _managed_atp_market_slug(slug: str) -> bool:
     return bool(normalized) and ("-atp-" in normalized or normalized.startswith("atp-"))
 
 
-def _has_position(payload: Mapping[str, Any], slug: str) -> bool:
+
+def _position_quantity(position: Mapping[str, Any]) -> Decimal | None:
+    quantity = _amount(position.get("netPositionDecimal"))
+    if quantity is None:
+        quantity = _amount(position.get("netPosition"))
+    return quantity
+
+
+def _position_cost(position: Mapping[str, Any]) -> Decimal:
+    cost = _amount(position.get("cost"))
+    if cost is None:
+        return Decimal("0")
+    return abs(cost)
+
+
+def _find_position(payload: Mapping[str, Any], slug: str) -> Mapping[str, Any] | None:
     positions = payload.get("positions") if isinstance(payload, Mapping) else None
     if isinstance(positions, Mapping):
         iterable = positions.items()
     elif isinstance(positions, list):
         iterable = (("", item) for item in positions)
     else:
-        return False
+        return None
     expected = slug.casefold()
     for key, position in iterable:
         if not isinstance(position, Mapping) or position.get("expired") is True:
             continue
-        metadata = position.get("marketMetadata")
-        meta_slug = metadata.get("slug") if isinstance(metadata, Mapping) else ""
-        candidate = str(key or position.get("marketSlug") or meta_slug or "").casefold()
-        if candidate != expected:
+        if _position_slug(key, position).casefold() != expected:
             continue
-        quantity = _amount(position.get("netPositionDecimal"))
-        if quantity is None:
-            quantity = _amount(position.get("netPosition"))
-        return quantity is None or abs(quantity) > Decimal("0.0000001")
-    return False
+        quantity = _position_quantity(position)
+        if quantity is None or abs(quantity) > Decimal("0.0000001"):
+            return position
+    return None
+
+def _has_position(payload: Mapping[str, Any], slug: str) -> bool:
+    return _find_position(payload, slug) is not None
 
 
 def _trade_quantity(trade: Mapping[str, Any]) -> Decimal | None:

@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.13-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.14-Railway",
             }
         )
         return session
@@ -112,10 +112,16 @@ class DiscordNotifier:
                 f"Stake: **${result.stake_amount:.2f}** · "
                 f"Price: **{result.player_price_cents:.1f}¢**"
             )
-            details.append(
-                f"Sizing: {result.bankroll_pct:g}% of "
-                f"${result.account_balance:.2f} account balance"
-            )
+            if result.position_upgrade:
+                details.append(
+                    f"Sizing: upgrade to **{result.target_exposure_pct:g}% total exposure** · "
+                    f"existing **${result.existing_exposure_amount:.2f}** → target **${result.target_exposure_amount:.2f}**"
+                )
+            else:
+                details.append(
+                    f"Sizing: **{result.target_exposure_pct or result.bankroll_pct:g}% target exposure** of "
+                    f"${result.account_balance:.2f} bankroll"
+                )
         if result.order_type:
             order_label = result.order_type.removeprefix("ORDER_TYPE_")
             quantity_label = "Estimated contracts" if order_label == "MARKET" else "Quantity"
@@ -224,7 +230,7 @@ class DiscordNotifier:
             f"✅ Break lead: {break_lead} · Serving: {serving}\n"
             f"🏁 Serving for match: {serving_for_match}\n"
             f"💪 Service points won: {service_pct}\n"
-            "💰 Live order size: **20% of authenticated balance**\n"
+            "💰 Target exposure: **15% at one break · 25% at two+ breaks**\n"
             f"🔎 {market}\n"
             f"🕒 {time_label}"
         )

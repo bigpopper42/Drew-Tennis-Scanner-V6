@@ -80,12 +80,14 @@ class WorkerConfigTests(unittest.TestCase):
             clear=True,
         ):
             config = WorkerConfig.from_env()
-        self.assertEqual(config.execution_bankroll_pct, 20.0)
-        self.assertEqual(config.public_summary()["execution_bankroll_pct"], 20.0)
+        self.assertEqual(config.execution_one_break_bankroll_pct, 15.0)
+        self.assertEqual(config.execution_two_break_bankroll_pct, 25.0)
+        self.assertEqual(config.public_summary()["execution_one_break_bankroll_pct"], 15.0)
+        self.assertEqual(config.public_summary()["execution_two_break_bankroll_pct"], 25.0)
         self.assertEqual(config.scan_interval_seconds, 15)
         self.assertEqual(config.public_summary()["scan_interval_seconds"], 15)
-        self.assertEqual(config.execution_stop_loss_trigger_cents, 30.0)
-        self.assertEqual(config.public_summary()["execution_stop_loss_trigger_cents"], 30.0)
+        self.assertEqual(config.execution_stop_loss_trigger_cents, 35.0)
+        self.assertEqual(config.public_summary()["execution_stop_loss_trigger_cents"], 35.0)
 
     def test_legacy_maximum_order_environment_value_is_ignored(self):
         with patch.dict(

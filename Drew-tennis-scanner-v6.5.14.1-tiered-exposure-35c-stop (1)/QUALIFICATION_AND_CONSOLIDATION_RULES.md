@@ -1,4 +1,4 @@
-# Version 6.5.13 Qualification and Consolidation Rules
+# Version 6.5.14 Qualification and Consolidation Rules
 
 ## Qualification volatility hard gate
 
@@ -19,7 +19,7 @@ Main-draw ATP Tour and Challenger matches are not rejected by this qualifier-spe
 
 The existing one-break maturity rule remains: four current-set games are required if the backed player has not been broken in the set, and five are required if they have been broken once.
 
-Version 6.5.13 retains the second hard confirmation when the most recently completed game is the break that creates the current one-break lead:
+Version 6.5.14 retains the second hard confirmation when the most recently completed game is the break that creates the current one-break lead:
 
 - fresh break with the backed player now on 4 games: while serving for game 5, they must reach 40-0;
 - fresh break with the backed player now on 5 games: while serving for game 6, they must reach 30-0.

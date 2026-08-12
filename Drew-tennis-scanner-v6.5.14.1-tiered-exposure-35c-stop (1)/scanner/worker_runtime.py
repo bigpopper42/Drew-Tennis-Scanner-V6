@@ -30,8 +30,9 @@ from .supabase_store import InsertResult, SupabaseStore
 
 TRUE_VALUES = {"1", "true", "yes", "on", "y"}
 FALSE_VALUES = {"0", "false", "no", "off", "n"}
-LOCKED_EXECUTION_BANKROLL_PCT = 20.0
-LOCKED_STOP_LOSS_TRIGGER_CENTS = 30.0
+LOCKED_ONE_BREAK_BANKROLL_PCT = 15.0
+LOCKED_TWO_BREAK_BANKROLL_PCT = 25.0
+LOCKED_STOP_LOSS_TRIGGER_CENTS = 35.0
 LOCKED_SCAN_INTERVAL_SECONDS = 15
 
 
@@ -98,7 +99,8 @@ class WorkerConfig:
     polymarket_execution_enabled: bool = False
     polymarket_key_id: str = ""
     polymarket_secret_key: str = ""
-    execution_bankroll_pct: float = LOCKED_EXECUTION_BANKROLL_PCT
+    execution_one_break_bankroll_pct: float = LOCKED_ONE_BREAK_BANKROLL_PCT
+    execution_two_break_bankroll_pct: float = LOCKED_TWO_BREAK_BANKROLL_PCT
     execution_minimum_order_usd: float = 0.50
     execution_minimum_price_cents: float = 50.0
     execution_maximum_price_cents: float = 99.0
@@ -130,7 +132,7 @@ class WorkerConfig:
             supabase_url=str(os.getenv("SUPABASE_URL") or "").strip(),
             supabase_key=supabase_key,
             timezone_name=str(os.getenv("TIMEZONE") or "America/Phoenix").strip(),
-            # Version 6.5.13 locks the production cycle at 15 seconds so the
+            # Version 6.5.14 locks the production cycle at 15 seconds so the
             # live scanner and client-side stop monitor are evaluated twice as often.
             # Any legacy Railway SCAN_INTERVAL_SECONDS value is intentionally ignored.
             scan_interval_seconds=LOCKED_SCAN_INTERVAL_SECONDS,
@@ -157,9 +159,10 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.13 restores live sizing to 20%. Any legacy Railway
-            # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
-            execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
+            # Version 6.5.14 uses tiered target exposure. Legacy flat sizing
+            # variables are intentionally ignored so Railway cannot override it.
+            execution_one_break_bankroll_pct=LOCKED_ONE_BREAK_BANKROLL_PCT,
+            execution_two_break_bankroll_pct=LOCKED_TWO_BREAK_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(
                 "EXECUTION_MIN_ORDER_USD", 0.50, 0.01, 1000.0
             ),
@@ -230,7 +233,8 @@ class WorkerConfig:
             "polymarket_credentials_configured": bool(
                 self.polymarket_key_id and self.polymarket_secret_key
             ),
-            "execution_bankroll_pct": self.execution_bankroll_pct,
+            "execution_one_break_bankroll_pct": self.execution_one_break_bankroll_pct,
+            "execution_two_break_bankroll_pct": self.execution_two_break_bankroll_pct,
             "execution_minimum_order_usd": self.execution_minimum_order_usd,
             "execution_maximum_order_usd": None,
             "execution_price_range_cents": [
@@ -374,7 +378,9 @@ class RailwayShadowWorker:
                 ExecutionConfig(
                     key_id=config.polymarket_key_id,
                     secret_key=config.polymarket_secret_key,
-                    bankroll_pct=config.execution_bankroll_pct,
+                    one_break_bankroll_pct=config.execution_one_break_bankroll_pct,
+                    two_break_bankroll_pct=config.execution_two_break_bankroll_pct,
+                    bankroll_pct=config.execution_one_break_bankroll_pct,
                     minimum_order_usd=config.execution_minimum_order_usd,
                     minimum_price_cents=config.execution_minimum_price_cents,
                     maximum_price_cents=config.execution_maximum_price_cents,

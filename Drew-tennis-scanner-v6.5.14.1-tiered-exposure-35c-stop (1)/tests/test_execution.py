@@ -420,18 +420,18 @@ def engine(client: FakeClient, **config_changes: Any) -> PolymarketExecutionEngi
     return PolymarketExecutionEngine(config(**config_changes), client=client)
 
 
-def test_direct_moneyline_executes_exact_twenty_percent_market_order_with_bounded_slippage() -> None:
+def test_direct_moneyline_executes_exact_fifteen_percent_one_break_market_order_with_bounded_slippage() -> None:
     client = FakeClient()
     result = engine(client).execute_trade(record())
 
     assert result.status == "EXECUTED"
-    assert result.stake_amount == 20.0
+    assert result.stake_amount == 15.0
     assert result.market_side == SHORT_SIDE
     request = client.orders.create_calls[0]
     assert "price" not in request
     assert "quantity" not in request
-    assert request["cashOrderQty"] == {"value": "20.00", "currency": "USD"}
-    assert result.order_quantity == 24.69
+    assert request["cashOrderQty"] == {"value": "15.00", "currency": "USD"}
+    assert result.order_quantity == 18.51
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
     assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
     assert request["action"] == "ORDER_ACTION_BUY"
@@ -456,8 +456,8 @@ def test_short_market_order_uses_backed_outcome_reference_with_three_tick_slippa
     assert request["type"] == "ORDER_TYPE_MARKET"
     assert request["slippageTolerance"]["currentPrice"]["value"] == "0.78"
     assert request["slippageTolerance"]["ticks"] == 3
-    assert request["cashOrderQty"] == {"value": "20.00", "currency": "USD"}
-    assert result.order_quantity == 24.69
+    assert request["cashOrderQty"] == {"value": "15.00", "currency": "USD"}
+    assert result.order_quantity == 18.51
 
 
 def test_short_76_cent_live_scenario_submits_cash_market_order_and_79_cent_cap() -> None:
@@ -471,7 +471,7 @@ def test_short_76_cent_live_scenario_submits_cash_market_order_and_79_cent_cap()
     assert result.status == "EXECUTED"
     assert result.market_side == SHORT_SIDE
     assert result.player_price_cents == 76.0
-    assert result.stake_amount == 16.39
+    assert result.stake_amount == 12.29
     assert result.maximum_player_price_cents == 79.0
     assert result.yes_reference_price_cents == 24.0
     assert result.best_yes_bid_cents == 24.0
@@ -481,9 +481,9 @@ def test_short_76_cent_live_scenario_submits_cash_market_order_and_79_cent_cap()
     assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
     assert request["action"] == "ORDER_ACTION_BUY"
     assert request["type"] == "ORDER_TYPE_MARKET"
-    assert request["cashOrderQty"] == {"value": "16.39", "currency": "USD"}
+    assert request["cashOrderQty"] == {"value": "12.29", "currency": "USD"}
     assert "quantity" not in request
-    assert result.order_quantity == 20.74
+    assert result.order_quantity == 15.55
     assert result.order_quantity * 0.79 <= 16.39
     assert request["slippageTolerance"] == {
         "currentPrice": {"value": "0.76", "currency": "USD"},
@@ -502,19 +502,19 @@ def test_short_97_cent_live_scenario_uses_no_reference_and_clamps_to_99_cents() 
     assert result.status == "EXECUTED"
     assert result.market_side == SHORT_SIDE
     assert result.player_price_cents == 97.0
-    assert result.stake_amount == 17.0
+    assert result.stake_amount == 12.75
     assert result.maximum_player_price_cents == 99.0
     assert result.yes_reference_price_cents == 3.0
     request = client.orders.create_calls[0]
     assert request["intent"] == "ORDER_INTENT_BUY_SHORT"
     assert request["outcomeSide"] == "OUTCOME_SIDE_NO"
-    assert request["cashOrderQty"] == {"value": "17.00", "currency": "USD"}
+    assert request["cashOrderQty"] == {"value": "12.75", "currency": "USD"}
     assert request["slippageTolerance"] == {
         "currentPrice": {"value": "0.97", "currency": "USD"},
         "ticks": 2,
     }
     assert result.slippage_ticks == 2
-    assert result.order_quantity == 17.17
+    assert result.order_quantity == 12.87
 
 
 def test_long_market_order_uses_best_offer_as_slippage_reference() -> None:
@@ -530,8 +530,8 @@ def test_long_market_order_uses_best_offer_as_slippage_reference() -> None:
     assert request["type"] == "ORDER_TYPE_MARKET"
     assert request["slippageTolerance"]["currentPrice"]["value"] == "0.78"
     assert request["slippageTolerance"]["ticks"] == 3
-    assert request["cashOrderQty"] == {"value": "20.00", "currency": "USD"}
-    assert result.order_quantity == 24.69
+    assert request["cashOrderQty"] == {"value": "15.00", "currency": "USD"}
+    assert result.order_quantity == 18.51
 
 
 def test_scanner_side_and_confidence_never_override_authenticated_sides() -> None:
@@ -788,17 +788,17 @@ def test_twenty_percent_below_market_minimum_quantity_retries_without_order() ->
     assert not client.orders.create_calls
 
 
-def test_twenty_percent_has_no_fixed_dollar_cap() -> None:
+def test_fifteen_percent_one_break_has_no_fixed_dollar_cap() -> None:
     client = FakeClient(account=FakeAccount(balance=1000.0, buying_power=1000.0))
 
     result = engine(client).execute_trade(record())
 
     assert result.status == "EXECUTED"
-    assert result.stake_amount == 200.0
+    assert result.stake_amount == 150.0
     request = client.orders.create_calls[0]
-    assert request["cashOrderQty"] == {"value": "200.00", "currency": "USD"}
+    assert request["cashOrderQty"] == {"value": "150.00", "currency": "USD"}
     assert "quantity" not in request
-    assert result.order_quantity == 246.91
+    assert result.order_quantity == 185.18
     assert result.order_quantity * 0.81 <= 200.0
 
 
@@ -858,17 +858,17 @@ def test_unrelated_position_does_not_block_a_distinct_market() -> None:
     assert engine(client).execute_trade(record()).status == "EXECUTED"
 
 
-def test_existing_same_market_position_blocks_second_twenty_percent_order() -> None:
+def test_existing_same_market_one_break_position_blocks_duplicate_order() -> None:
     portfolio = FakePortfolio(
-        {MONEYLINE_SLUG: {"netPosition": "10", "marketMetadata": {"slug": MONEYLINE_SLUG}}}
+        {MONEYLINE_SLUG: {"netPositionDecimal": "-10", "cost": {"value": "15.00", "currency": "USD"}, "marketMetadata": {"slug": MONEYLINE_SLUG}}}
     )
     client = FakeClient(portfolio=portfolio)
 
     result = engine(client).execute_trade(record())
 
     assert result.status == "REJECTED"
-    assert result.failure_stage == "idempotency"
-    assert "second 20% order was blocked" in result.reason
+    assert result.failure_stage == "target_exposure"
+    assert "one-break target position already exists" in result.reason
     assert not client.orders.create_calls
 
 
@@ -954,7 +954,7 @@ def test_existing_filled_order_blocks_restart_duplicate_before_position_is_visib
 
     assert result.status == "REJECTED"
     assert result.failure_stage == "idempotency"
-    assert result.filled_quantity == 4.25
+    assert result.order_id == "filled-before-position"
     assert not orders.create_calls
 
 
@@ -1043,9 +1043,9 @@ def test_short_no_expired_ioc_ignores_default_exchange_option_enum() -> None:
         "currentPrice": {"value": "0.87", "currency": "USD"},
         "ticks": 3,
     }
-    assert request["cashOrderQty"] == {"value": "13.53", "currency": "USD"}
+    assert request["cashOrderQty"] == {"value": "10.15", "currency": "USD"}
     assert "quantity" not in request
-    assert result.order_quantity == 15.03
+    assert result.order_quantity == 11.27
     assert result.order_quantity * 0.90 <= 13.53
 
 
@@ -1078,8 +1078,8 @@ def test_market_preview_requires_cash_order_qty_and_preserves_live_telemetry() -
     assert result.player_price_cents == 97.0
     assert result.best_yes_bid_cents == 96.0
     assert result.best_yes_offer_cents == 97.0
-    assert result.stake_amount == 17.0
-    assert result.order_quantity == 17.17
+    assert result.stake_amount == 12.75
+    assert result.order_quantity == 12.87
 
 
 def test_preview_rejection_never_creates_order() -> None:
@@ -2102,7 +2102,7 @@ def test_cloudflare_1015_order_create_retries_only_definite_edge_block() -> None
 
 def test_stop_loss_closes_long_at_exactly_thirty_cents_without_quantity() -> None:
     portfolio = FakePortfolio(
-        {MONEYLINE_SLUG: {"netPosition": "10", "marketMetadata": {"slug": MONEYLINE_SLUG}}}
+        {MONEYLINE_SLUG: {"netPositionDecimal": "10", "marketMetadata": {"slug": MONEYLINE_SLUG}}}
     )
     client = FakeClient(
         portfolio=portfolio,
@@ -2152,7 +2152,7 @@ def test_stop_loss_closes_short_when_executable_no_bid_reaches_thirty_cents() ->
 
 def test_stop_loss_does_not_trigger_above_thirty_cents() -> None:
     portfolio = FakePortfolio(
-        {MONEYLINE_SLUG: {"netPosition": "10", "marketMetadata": {"slug": MONEYLINE_SLUG}}}
+        {MONEYLINE_SLUG: {"netPositionDecimal": "-10", "cost": {"value": "15.00", "currency": "USD"}, "marketMetadata": {"slug": MONEYLINE_SLUG}}}
     )
     client = FakeClient(
         portfolio=portfolio,
@@ -2232,3 +2232,133 @@ def test_execution_safety_gate_blocks_fresh_break_at_five_before_30_love() -> No
     assert result.failure_stage == "match_state_safety"
     assert "30-0" in result.reason
     assert not client.orders.create_calls
+
+
+def test_fresh_two_break_signal_targets_twenty_five_percent() -> None:
+    client = FakeClient(account=FakeAccount(balance=100.0, buying_power=100.0))
+    trade = record()
+    trade["break_lead"] = 2
+
+    result = engine(client).execute_trade(trade)
+
+    assert result.status == "EXECUTED"
+    assert result.target_exposure_pct == 25.0
+    assert result.position_upgrade is False
+    assert result.stake_amount == 25.0
+    assert client.orders.create_calls[0]["cashOrderQty"] == {"value": "25.00", "currency": "USD"}
+
+
+def test_two_break_upgrade_adds_only_difference_from_fifteen_to_twenty_five_percent() -> None:
+    portfolio = FakePortfolio(
+        {
+            MONEYLINE_SLUG: {
+                "netPositionDecimal": "-15.5",
+                "cost": {"value": "15.00", "currency": "USD"},
+                "cashValue": {"value": "15.35", "currency": "USD"},
+                "marketMetadata": {"slug": MONEYLINE_SLUG},
+            }
+        }
+    )
+    client = FakeClient(
+        account=FakeAccount(balance=85.0, buying_power=85.0),
+        portfolio=portfolio,
+    )
+    trade = record()
+    trade["break_lead"] = 2
+    trade["recommendation_change"] = "UPGRADED"
+
+    result = engine(client).execute_trade(trade)
+
+    assert result.status == "EXECUTED"
+    assert result.position_upgrade is True
+    assert result.target_exposure_pct == 25.0
+    assert result.account_balance == 100.0
+    assert result.existing_exposure_amount == 15.0
+    assert result.target_exposure_amount == 25.0
+    assert result.stake_amount == 10.0
+    assert client.orders.create_calls[0]["cashOrderQty"] == {"value": "10.00", "currency": "USD"}
+
+
+def test_two_break_upgrade_from_legacy_twenty_percent_adds_only_five_percent() -> None:
+    portfolio = FakePortfolio(
+        {
+            MONEYLINE_SLUG: {
+                "netPositionDecimal": "-20.5",
+                "cost": {"value": "20.00", "currency": "USD"},
+                "marketMetadata": {"slug": MONEYLINE_SLUG},
+            }
+        }
+    )
+    client = FakeClient(account=FakeAccount(balance=80.0, buying_power=80.0), portfolio=portfolio)
+    trade = record()
+    trade["break_lead"] = 2
+
+    result = engine(client).execute_trade(trade)
+
+    assert result.status == "EXECUTED"
+    assert result.existing_exposure_amount == 20.0
+    assert result.target_exposure_amount == 25.0
+    assert result.stake_amount == 5.0
+
+
+def test_repeat_two_break_signal_does_not_stack_above_twenty_five_percent_target() -> None:
+    portfolio = FakePortfolio(
+        {
+            MONEYLINE_SLUG: {
+                "netPositionDecimal": "-25.5",
+                "cost": {"value": "25.00", "currency": "USD"},
+                "marketMetadata": {"slug": MONEYLINE_SLUG},
+            }
+        }
+    )
+    client = FakeClient(account=FakeAccount(balance=75.0, buying_power=75.0), portfolio=portfolio)
+    trade = record()
+    trade["break_lead"] = 2
+
+    result = engine(client).execute_trade(trade)
+
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "target_exposure"
+    assert "already meets the 25% target" in result.reason
+    assert client.orders.create_calls == []
+
+
+def test_two_break_upgrade_refuses_opposite_side_position() -> None:
+    portfolio = FakePortfolio(
+        {
+            MONEYLINE_SLUG: {
+                "netPositionDecimal": "15.5",
+                "cost": {"value": "15.00", "currency": "USD"},
+                "marketMetadata": {"slug": MONEYLINE_SLUG},
+            }
+        }
+    )
+    client = FakeClient(account=FakeAccount(balance=85.0, buying_power=85.0), portfolio=portfolio)
+    trade = record()
+    trade["break_lead"] = 2
+
+    result = engine(client).execute_trade(trade)
+
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "idempotency"
+    assert "opposite outcome" in result.reason
+    assert client.orders.create_calls == []
+
+
+def test_default_stop_loss_trigger_is_forty_cents() -> None:
+    portfolio = FakePortfolio(
+        {
+            MONEYLINE_SLUG: {
+                "netPositionDecimal": "10",
+                "marketMetadata": {"slug": MONEYLINE_SLUG},
+            }
+        }
+    )
+    client = FakeClient(portfolio=portfolio, markets=FakeMarkets(bid="0.35", ask="0.36"))
+
+    results = engine(client).monitor_stop_losses()
+
+    assert len(results) == 1
+    assert results[0].trigger_price_cents == 35.0
+    assert results[0].observed_price_cents == 35.0
+    assert len(client.orders.close_position_calls) == 1
