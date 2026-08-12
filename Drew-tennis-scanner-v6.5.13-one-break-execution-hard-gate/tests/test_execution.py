@@ -405,6 +405,14 @@ def record(
         "market_match_confidence": 1.0,
         "recommendation_change": "INITIAL",
         "stake_pct": 20.0,
+        "break_lead": 1,
+        "backed_player_games_in_set": 5,
+        "opponent_games_in_set": 3,
+        "current_set_breaks_suffered": 0,
+        "serving": True,
+        "last_completed_game_was_break_by_backed": False,
+        "current_service_game_reached_30_0": True,
+        "current_service_game_reached_40_0": True,
     }
 
 
@@ -2170,3 +2178,57 @@ def test_stop_loss_ignores_non_atp_positions() -> None:
     assert results == []
     assert client.markets.book_calls == []
     assert client.orders.close_position_calls == []
+
+
+def test_execution_safety_gate_blocks_one_break_trade_at_one_game_even_if_record_says_trade() -> None:
+    client = FakeClient()
+    payload = record()
+    payload.update({
+        "break_lead": 1,
+        "backed_player_games_in_set": 1,
+        "current_set_breaks_suffered": 0,
+        "serving": True,
+        "current_game_score": "40-0",
+        "current_service_game_reached_40_0": True,
+    })
+    result = engine(client).execute_trade(payload)
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "match_state_safety"
+    assert "requires at least 4" in result.reason
+    assert not client.orders.create_calls
+
+
+def test_execution_safety_gate_blocks_fresh_break_at_four_before_40_love() -> None:
+    client = FakeClient()
+    payload = record()
+    payload.update({
+        "break_lead": 1,
+        "backed_player_games_in_set": 4,
+        "current_set_breaks_suffered": 0,
+        "serving": True,
+        "last_completed_game_was_break_by_backed": True,
+        "current_service_game_reached_40_0": False,
+    })
+    result = engine(client).execute_trade(payload)
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "match_state_safety"
+    assert "40-0" in result.reason
+    assert not client.orders.create_calls
+
+
+def test_execution_safety_gate_blocks_fresh_break_at_five_before_30_love() -> None:
+    client = FakeClient()
+    payload = record()
+    payload.update({
+        "break_lead": 1,
+        "backed_player_games_in_set": 5,
+        "current_set_breaks_suffered": 0,
+        "serving": True,
+        "last_completed_game_was_break_by_backed": True,
+        "current_service_game_reached_30_0": False,
+    })
+    result = engine(client).execute_trade(payload)
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "match_state_safety"
+    assert "30-0" in result.reason
+    assert not client.orders.create_calls

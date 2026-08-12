@@ -1,6 +1,6 @@
 # Automation Roadmap
 
-## Completed through Version 6.5.12.2
+## Completed through Version 6.5.13
 
 - API Tennis-first live discovery and automated decision-tree scanning
 - Polymarket US event-first moneyline resolution
@@ -30,4 +30,4 @@
 4. Review whether 20% sizing and the 30¢ stop are optimal after a meaningful trade sample.
 5. Analyze performance by side, entry price, score state, tournament level, and scanner rule.
 
-- Version 6.5.12.2: one-break maturity gate (4 games unbroken / 5 games after a break), 20% sizing, and 15-second cycle.
+- Version 6.5.13: one-break maturity gate (4 games unbroken / 5 games after a break), 20% sizing, and 15-second cycle.

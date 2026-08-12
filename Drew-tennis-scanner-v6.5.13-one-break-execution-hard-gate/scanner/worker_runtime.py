@@ -130,7 +130,7 @@ class WorkerConfig:
             supabase_url=str(os.getenv("SUPABASE_URL") or "").strip(),
             supabase_key=supabase_key,
             timezone_name=str(os.getenv("TIMEZONE") or "America/Phoenix").strip(),
-            # Version 6.5.12.2 locks the production cycle at 15 seconds so the
+            # Version 6.5.13 locks the production cycle at 15 seconds so the
             # live scanner and client-side stop monitor are evaluated twice as often.
             # Any legacy Railway SCAN_INTERVAL_SECONDS value is intentionally ignored.
             scan_interval_seconds=LOCKED_SCAN_INTERVAL_SECONDS,
@@ -157,7 +157,7 @@ class WorkerConfig:
             polymarket_secret_key=str(
                 os.getenv("POLYMARKET_SECRET_KEY") or ""
             ).strip(),
-            # Version 6.5.12.2 restores live sizing to 20%. Any legacy Railway
+            # Version 6.5.13 restores live sizing to 20%. Any legacy Railway
             # EXECUTION_BANKROLL_PCT variable is intentionally ignored.
             execution_bankroll_pct=LOCKED_EXECUTION_BANKROLL_PCT,
             execution_minimum_order_usd=_env_float(
@@ -912,6 +912,9 @@ class RailwayShadowWorker:
             "backed_player_games_in_set": match.backed_player_games_in_set,
             "opponent_games_in_set": match.opponent_games_in_set,
             "current_game_score": match.current_game_score,
+            "last_completed_game_was_break_by_backed": match.last_completed_game_was_break_by_backed,
+            "current_service_game_reached_30_0": match.current_service_game_reached_30_0,
+            "current_service_game_reached_40_0": match.current_service_game_reached_40_0,
             "completed_sets": match.completed_sets,
             "breaks_suffered_by_set": match.breaks_suffered_by_set,
             "breaks_suffered_total": match.breaks_suffered_total,

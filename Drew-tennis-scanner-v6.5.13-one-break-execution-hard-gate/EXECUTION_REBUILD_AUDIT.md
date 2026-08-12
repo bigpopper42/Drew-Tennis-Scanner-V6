@@ -1,8 +1,8 @@
-# Polymarket Execution Rebuild Audit — Version 6.5.12.2
+# Polymarket Execution Rebuild Audit — Version 6.5.13
 
 ## Bottom line
 
-Version 6.5.12.2 does **not** reuse the V6.5.6–V6.5.8 execution matcher. The live execution authority is now `scanner/polymarket_executor.py`; `scanner/execution.py` is only a compatibility re-export.
+Version 6.5.13 does **not** reuse the V6.5.6–V6.5.8 execution matcher. The live execution authority is now `scanner/polymarket_executor.py`; `scanner/execution.py` is only a compatibility re-export.
 
 This audit reviewed all 21 production Python files (9,545 lines), all 11 Python test files (3,419 lines), deployment/configuration files, and the SQL schema/migrations. The review included full source reading, execution-path tracing, AST/static scans, comparison with the available V6.5.5 and V6.5.8 repositories, compilation, configuration startup, and automated tests.
 
@@ -10,7 +10,7 @@ The exact V6.5.4 repository was not available in this workspace. Therefore, this
 
 No production Polymarket credentials were available. A real order was not submitted. This build is source-audited and test-verified, but the first Railway live order remains the final integration test.
 
-After Version 6.5.9.5 was deployed, the live preview endpoint returned `cash_order_qty is required for market order`. Version 6.5.12.2 incorporates that direct production evidence by restoring `cashOrderQty` and adding an exact regression test.
+After Version 6.5.9.5 was deployed, the live preview endpoint returned `cash_order_qty is required for market order`. Version 6.5.13 incorporates that direct production evidence by restoring `cashOrderQty` and adding an exact regression test.
 
 ## Why V6.5.6–V6.5.8 failed
 
@@ -49,7 +49,7 @@ The rebuilt executor follows one strict sequence:
 
 ## Official Polymarket contract comparison
 
-| Requirement | Official contract reviewed | V6.5.12.2 implementation |
+| Requirement | Official contract reviewed | V6.5.13 implementation |
 |---|---|---|
 | Authentication | `PolymarketUS(key_id, secret_key)` with Ed25519 credentials | `PolymarketExecutionEngine.__init__` |
 | Event discovery | Events support `gameId`, `eventDate`, start-time, status, category, limit and offset filters | `_matching_events`, `_event_queries` |
@@ -65,7 +65,7 @@ The rebuilt executor follows one strict sequence:
 | POST retry safety | Official SDK does not automatically retry non-idempotent order creation | one `orders.create` call; reconciliation on ambiguous failure |
 | Order-side confirmation | Returned orders expose `intent` and/or `outcomeSide` + `action`; explicit outcome takes priority | `_validate_order_payload_contract` checks preview, creation, and status responses |
 | Order lifecycle | New, pending, partial fill, filled, canceled, rejected and expired states | `_interpret_order`, `_confirm_order` |
-| Real-time state | Official docs recommend private WebSocket updates over polling | V6.5.12.2 uses bounded REST polling; WebSocket remains a documented limitation |
+| Real-time state | Official docs recommend private WebSocket updates over polling | V6.5.13 uses bounded REST polling; WebSocket remains a documented limitation |
 | Stop-loss trigger | Current SDK order types are LIMIT and MARKET; whole-position close is exposed separately | client-side 30¢ executable-price monitor uses `orders.close_position` with no local quantity |
 
 Official sources reviewed:
@@ -141,7 +141,7 @@ Official sources reviewed:
 - Full automated suite: **168 tests passed** in the source tree after the 20% sizing and 30¢ stop-loss additions.
 - The release ZIP is re-tested after clean extraction before delivery.
 - Full Python compilation: passed in the source tree and clean extraction.
-- Dry-run Railway configuration startup: passed with Version `6.5.12.2`, cash-sized 20% sizing, active 30¢ stop monitoring, unlimited distinct markets, and same-market upgrades disabled.
+- Dry-run Railway configuration startup: passed with Version `6.5.13`, cash-sized 20% sizing, active 30¢ stop monitoring, unlimited distinct markets, and same-market upgrades disabled.
 - AST/static scan: no syntax failures, bare `except:`, `eval`, `exec`, mutable collection defaults, or production TODO/FIXME/HACK markers.
 - Package scan: no live `.env`, credentials, private keys, webhook URLs, caches, compiled Python files, or nested ZIPs included.
 - No live-money order was submitted.
@@ -158,6 +158,6 @@ Official sources reviewed:
 
 ## Release decision
 
-V6.5.12.2 is materially different from the failed V6.5.6–V6.5.8 matcher and is suitable for a controlled Railway integration test. It is **not** described as guaranteed or live-proven.
+V6.5.13 is materially different from the failed V6.5.6–V6.5.8 matcher and is suitable for a controlled Railway integration test. It is **not** described as guaranteed or live-proven.
 
 If the first live trade cannot resolve a normal active ATP moneyline, maps the wrong player, selects a prop, submits a duplicate, or reports a fill without exchange evidence, disable execution and restore the untouched V6.5.4 deployment.

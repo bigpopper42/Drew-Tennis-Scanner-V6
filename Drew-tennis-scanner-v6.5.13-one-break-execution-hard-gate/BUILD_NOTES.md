@@ -1,4 +1,9 @@
-# Version 6.5.12.2 Build Notes
+# Version 6.5.13 Build Notes
+
+## Critical one-break execution hardening
+
+V6.5.13 removes the legacy early-set one-break confirmation path and duplicates the minimum-game/fresh-break consolidation checks at the Polymarket execution boundary. A record cannot execute with a one-break lead before 4 current-set games (or 5 after being broken), even if an upstream component incorrectly labels it TRADE. Fresh breaks at 4 require 40-0 while serving for game five; fresh breaks at 5 require 30-0 while serving for game six.
+
 
 ## Requested changes
 
@@ -14,7 +19,7 @@
 
 ## Why the new hard rule exists
 
-The observed misses shared a pattern: a one-break lead created in the first one or two games could satisfy the older confirmation logic too early. V6.5.12.2 requires the set to mature before a one-break lead can qualify. This is an added gate, not a replacement for the other scanner requirements.
+The observed misses shared a pattern: a one-break lead created in the first one or two games could satisfy the older confirmation logic too early. V6.5.13 requires the set to mature before a one-break lead can qualify. This is an added gate, not a replacement for the other scanner requirements.
 
 ## Verification
 
@@ -27,9 +32,9 @@ The observed misses shared a pattern: a one-break lead created in the first one 
 - Production cycle locked at 15 seconds.
 - Existing 30¢ LONG and SHORT stop-loss tests retained.
 
-## Version 6.5.12.2 scanner hardening
+## Version 6.5.13 scanner hardening
 
-Live review found that four of five observed misses clustered in volatile qualification matches involving low-ranked players. Version 6.5.12.2 uses a tiered qualification-specific hard gate: backed ATP ranks 1-150 may face any opponent; backed ranks 151-200 require an opponent ranked 450 or worse; backed ranks 201-250 require an opponent ranked 750 or worse; backed ranks 251+ are blocked. Missing backed-player ranking always blocks, and opponent ranking is required for the 151-250 tiers. Main-draw ATP Tour and Challenger matches keep the existing ranking treatment.
+Live review found that four of five observed misses clustered in volatile qualification matches involving low-ranked players. Version 6.5.13 uses a tiered qualification-specific hard gate: backed ATP ranks 1-150 may face any opponent; backed ranks 151-200 require an opponent ranked 450 or worse; backed ranks 201-250 require an opponent ranked 750 or worse; backed ranks 251+ are blocked. Missing backed-player ranking always blocks, and opponent ranking is required for the 151-250 tiers. Main-draw ATP Tour and Challenger matches keep the existing ranking treatment.
 
 The release also closes a one-break consolidation loophole. When the most recently completed game was a break by the backed player:
 

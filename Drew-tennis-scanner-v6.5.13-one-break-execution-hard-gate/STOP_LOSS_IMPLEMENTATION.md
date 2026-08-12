@@ -1,4 +1,4 @@
-# 30¢ Stop-Loss Implementation — Version 6.5.12.2
+# 30¢ Stop-Loss Implementation — Version 6.5.13
 
 ## Rule
 

@@ -605,6 +605,56 @@ class PolymarketExecutionEngine:
         if not player or not opponent or _normalize_name(player) == _normalize_name(opponent):
             return result("REJECTED", "Scanner signal does not contain two different players.", failure_stage="input")
 
+        # Version 6.5.13 execution fail-safe.  The scanner is the primary decision
+        # authority, but Polymarket must never receive an immature one-break
+        # signal even if an upstream mapping/decision regression marks it TRADE.
+        try:
+            break_lead = int(record.get("break_lead")) if record.get("break_lead") is not None else None
+        except (TypeError, ValueError):
+            break_lead = None
+        if break_lead == 1:
+            try:
+                games_in_set = int(record.get("backed_player_games_in_set"))
+            except (TypeError, ValueError):
+                return result(
+                    "REJECTED",
+                    "Execution safety gate blocked one-break trade because current-set games won is unavailable.",
+                    failure_stage="match_state_safety",
+                )
+            try:
+                breaks_suffered = int(record.get("current_set_breaks_suffered"))
+            except (TypeError, ValueError):
+                return result(
+                    "REJECTED",
+                    "Execution safety gate blocked one-break trade because current-set break history is unavailable.",
+                    failure_stage="match_state_safety",
+                )
+
+            minimum_games = 5 if breaks_suffered >= 1 else 4
+            if games_in_set < minimum_games:
+                return result(
+                    "REJECTED",
+                    f"Execution safety gate blocked immature one-break trade: backed player has {games_in_set} game(s) in the current set and requires at least {minimum_games}.",
+                    failure_stage="match_state_safety",
+                )
+
+            fresh_break = record.get("last_completed_game_was_break_by_backed") is True
+            serving = record.get("serving") is True
+            if fresh_break and games_in_set == 4:
+                if not serving or record.get("current_service_game_reached_40_0") is not True:
+                    return result(
+                        "REJECTED",
+                        "Execution safety gate blocked fresh break at four games until the backed player reaches 40-0 while serving for game five.",
+                        failure_stage="match_state_safety",
+                    )
+            if fresh_break and games_in_set == 5:
+                if not serving or record.get("current_service_game_reached_30_0") is not True:
+                    return result(
+                        "REJECTED",
+                        "Execution safety gate blocked fresh break at five games until the backed player reaches 30-0 while serving for game six.",
+                        failure_stage="match_state_safety",
+                    )
+
         try:
             resolved = self._resolve_market(record, player, opponent)
         except RetryableExecutionError as exc:

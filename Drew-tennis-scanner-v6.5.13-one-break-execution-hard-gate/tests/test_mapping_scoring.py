@@ -433,3 +433,17 @@ class FreshBreakMappingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_one_break_at_one_game_can_never_trade_even_with_40_love_confirmation() -> None:
+    match = eligible_match()
+    match.break_lead = 1
+    match.backed_player_games_in_set = 1
+    match.opponent_games_in_set = 0
+    match.current_set_breaks_suffered = 0
+    match.serving = True
+    match.current_game_score = "40-0"
+    match.current_service_game_reached_40_0 = True
+    decision = evaluate_match(match)
+    assert decision.status == "NO TRADE"
+    assert any("at least 4 games" in concern for concern in decision.concerns)

@@ -56,13 +56,12 @@ def _one_break_confirmed(match: MatchInput, service_pct: Optional[float]) -> boo
     if games - opponent_games >= 2:
         return True
 
-    # This confirmation helper retains the service/point-score confirmation.
-    # Version 6.5.12.2 applies a separate minimum-games hard gate before this result
-    # can make a one-break lead eligible.
+    # Version 6.5.13: early one-break leads can never be confirmed here.
+    # The backed player must first satisfy the minimum-games maturity gate.
     if games <= 3:
-        return serving and strong_service and score in {"30-0", "40-0", "40-15"}
+        return False
 
-    # Late one-break leads may qualify inside the service game.
+    # Mature one-break leads may qualify inside the service game.
     if not serving:
         return False
     if strong_service:
@@ -92,7 +91,7 @@ def evaluate_hard_rules(match: MatchInput) -> HardRuleResult:
     else:
         passed.append("ATP-only competition scope passed")
 
-    # Version 6.5.12.2 qualification-volatility gate. Qualifiers use a tiered
+    # Version 6.5.13 qualification-volatility gate. Qualifiers use a tiered
     # ranking rule that preserves volume while demanding a larger ranking gap
     # when the backed player is outside the top 150:
     #   backed 1-150   -> opponent rank does not matter;
@@ -192,7 +191,7 @@ def evaluate_hard_rules(match: MatchInput) -> HardRuleResult:
     else:
         passed.append(f"Effective service points won is {service_pct:.1f}%")
 
-    # One-break maturity hard gate (Version 6.5.12.2): early breaks cannot become
+    # One-break maturity hard gate (Version 6.5.13): early breaks cannot become
     # tradeable merely because they were consolidated. If the backed player has
     # not been broken in the current set, they must first win at least four games
     # in that set. If they have been broken once, they must first win at least five
@@ -203,8 +202,10 @@ def evaluate_hard_rules(match: MatchInput) -> HardRuleResult:
         if games is None:
             unknown.append("Current-set games won is unavailable for one-break maturity rule")
         elif current_breaks is None:
-            if not fallback:
-                unknown.append("Current-set break history is unavailable for one-break maturity rule")
+            # Never allow a one-break trade when we cannot tell whether the
+            # backed player has already been broken in this set, because that
+            # changes the required minimum from four games to five.
+            unknown.append("Current-set break history is unavailable for one-break maturity rule")
         else:
             minimum_games = 5 if current_breaks >= 1 else 4
             if games < minimum_games:
@@ -224,7 +225,7 @@ def evaluate_hard_rules(match: MatchInput) -> HardRuleResult:
             games = int(match.backed_player_games_in_set or 0)
             fresh_break = match.last_completed_game_was_break_by_backed is True
 
-            # Version 6.5.12.2 closes the late-set consolidation loophole. If the
+            # Version 6.5.13 closes the late-set consolidation loophole. If the
             # backed player has JUST broken to reach four or five games, the
             # lead is not considered consolidated merely because the minimum-
             # games maturity gate is already satisfied. They must establish a
