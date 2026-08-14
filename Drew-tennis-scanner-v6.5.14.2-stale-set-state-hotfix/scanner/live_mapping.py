@@ -155,20 +155,50 @@ def _safe_float(value: Any) -> Optional[float]:
 
 
 def _parse_set_number(event: Mapping[str, Any]) -> int:
-    status = str(event.get("event_status") or "")
-    match = re.search(r"(?:set|s)\s*(\d+)", status, flags=re.IGNORECASE)
-    if match:
-        return max(1, int(match.group(1)))
+    """Resolve the current set from all live-state evidence, never status alone.
 
-    set_numbers: List[int] = []
+    API Tennis can briefly leave ``event_status`` on the just-completed set while
+    ``scores``, point-by-point, or ``event_final_result`` already indicate that
+    the next set has begun.  Trusting status first can therefore recycle a
+    completed 6-x score into the new set and fabricate a break lead.
+    """
+    candidates: List[int] = []
+
+    status = str(event.get("event_status") or "")
+    status_match = re.search(r"(?:set|s)\s*(\d+)", status, flags=re.IGNORECASE)
+    if status_match:
+        candidates.append(max(1, int(status_match.group(1))))
+
     for item in event.get("scores") or []:
         if not isinstance(item, Mapping):
             continue
         number = _safe_int(item.get("score_set"))
         if number:
-            set_numbers.append(number)
-    # When a match is live, the highest score set is normally the current set.
-    return max(set_numbers, default=1)
+            candidates.append(number)
+
+    for item in event.get("pointbypoint") or []:
+        if not isinstance(item, Mapping):
+            continue
+        number = _set_number_from_entry(item)
+        if number:
+            candidates.append(number)
+
+    # event_final_result is the live sets-won tally.  If at least one set has
+    # completed and the event is not finished, the active set must be one past
+    # the number of completed sets even if status/scores lag for a snapshot.
+    finished = any(token in status.casefold() for token in ("finished", "ended", "retired", "walkover", "cancelled", "canceled"))
+    if not finished:
+        result = str(event.get("event_final_result") or "").replace("–", "-")
+        parts = [part.strip() for part in result.split("-")]
+        if len(parts) == 2:
+            first_sets = _safe_int(parts[0])
+            second_sets = _safe_int(parts[1])
+            if first_sets is not None and second_sets is not None:
+                completed = max(0, first_sets) + max(0, second_sets)
+                if completed > 0:
+                    candidates.append(completed + 1)
+
+    return max(candidates, default=1)
 
 
 def _integer_games(value: Any) -> int:
@@ -780,6 +810,7 @@ def build_live_scanner_mapping(
         "scan_ranking": ranking or 0,
         "scan_opponent_ranking": opponent_ranking or 0,
         "scan_best_of_sets": best_of,
+        "scan_current_set": set_number,
         "scan_match_closing_set": match_closing,
         "scan_straight_set_closing": straight_set_closing,
         "scan_deciding_set": deciding_set,

@@ -2362,3 +2362,46 @@ def test_default_stop_loss_trigger_is_forty_cents() -> None:
     assert results[0].trigger_price_cents == 35.0
     assert results[0].observed_price_cents == 35.0
     assert len(client.orders.close_position_calls) == 1
+
+
+def test_execution_safety_gate_blocks_impossible_closing_set_from_stale_prior_set() -> None:
+    client = FakeClient()
+    payload = record()
+    payload.update({
+        "break_lead": 2,
+        "best_of_sets": 3,
+        "current_set_number": 1,
+        "completed_sets": 0,
+        "match_closing_set": True,
+        "serving_for_match": True,
+        "backed_player_games_in_set": 6,
+        "opponent_games_in_set": 3,
+        "current_game_score": "0-0",
+    })
+
+    result = engine(client).execute_trade(payload)
+
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "set_state_safety"
+    assert "impossible closing-set state" in result.reason
+    assert client.orders.create_calls == []
+
+
+def test_execution_safety_gate_blocks_current_set_number_mismatch() -> None:
+    client = FakeClient()
+    payload = record()
+    payload.update({
+        "break_lead": 2,
+        "best_of_sets": 3,
+        "current_set_number": 2,
+        "completed_sets": 0,
+        "match_closing_set": False,
+        "serving_for_match": False,
+    })
+
+    result = engine(client).execute_trade(payload)
+
+    assert result.status == "REJECTED"
+    assert result.failure_stage == "set_state_safety"
+    assert "inconsistent set state" in result.reason
+    assert client.orders.create_calls == []

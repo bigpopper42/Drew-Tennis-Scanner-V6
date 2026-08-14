@@ -1,8 +1,8 @@
-# Deploy Version 6.5.14
+# Deploy Version 6.5.14.2
 
 Deploy the flat-root repository to Railway and preserve the previous deployment as the rollback point.
 
-Confirm startup reports Version `6.5.14`. The production worker remains locked to a 15-second cycle.
+Confirm startup reports Version `6.5.14.2`. The production worker remains locked to a 15-second cycle.
 
 Live execution targets:
 

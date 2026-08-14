@@ -64,7 +64,7 @@ class DiscordNotifier:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "DrewTennisScanner/6.5.14-Railway",
+                "User-Agent": "DrewTennisScanner/6.5.14.2-Railway",
             }
         )
         return session

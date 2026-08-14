@@ -1,4 +1,4 @@
-# 35¢ Stop-Loss Implementation — Version 6.5.14
+# 35¢ Stop-Loss Implementation — Version 6.5.14.2
 
 The worker monitors authenticated ATP positions each cycle and closes a position when the executable price of the backed outcome is **35¢ or lower**. This is a fixed contract-price trigger, not a percentage-loss calculation.
 

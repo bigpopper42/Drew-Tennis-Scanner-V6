@@ -1,6 +1,6 @@
-# Drew Tennis Scanner Version 6.5.14
+# Drew Tennis Scanner Version 6.5.14.2
 
-V6.5.14.1 preserves the V6.5.13 scanner hardening and adds tiered target exposure for live Polymarket execution.
+V6.5.14.2 preserves the V6.5.13 scanner hardening and adds tiered target exposure for live Polymarket execution.
 
 ## Risk model
 

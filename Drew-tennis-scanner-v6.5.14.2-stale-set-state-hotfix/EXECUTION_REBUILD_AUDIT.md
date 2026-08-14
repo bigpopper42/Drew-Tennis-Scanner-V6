@@ -1,8 +1,8 @@
-# Polymarket Execution Audit — Version 6.5.14
+# Polymarket Execution Audit — Version 6.5.14.2
 
 The live execution authority is `scanner/polymarket_executor.py`. `scanner/execution.py` remains a compatibility re-export.
 
-V6.5.14.1 preserves the validated cash market-order path and explicit YES/NO contract mapping. The material change is target-exposure sizing:
+V6.5.14.2 preserves the validated cash market-order path and explicit YES/NO contract mapping. The material change is target-exposure sizing:
 
 1. one-break signal → 15% target
 2. two+ break signal without a position → 25% target

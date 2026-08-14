@@ -101,6 +101,7 @@ def match_from_mapping(
         competition_group=str(u.get("scan_competition_group") or "Unknown"),
         is_qualification=bool(u.get("scan_is_qualification")),
         best_of_sets=max(3, int(_as_float(u.get("scan_best_of_sets"), 3))),
+        current_set_number=optional_int("scan_current_set", "current_set"),
         match_closing_set=(bool(u.get("scan_match_closing_set")) if available("match_closing_set") else None),
         straight_set_closing=bool(u.get("scan_straight_set_closing")),
         deciding_set=bool(u.get("scan_deciding_set")),

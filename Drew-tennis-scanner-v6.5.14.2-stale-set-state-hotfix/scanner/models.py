@@ -28,6 +28,7 @@ class MatchInput:
     competition_group: str = "Unknown"
     is_qualification: bool = False
     best_of_sets: int = 3
+    current_set_number: Optional[int] = None
 
     match_closing_set: Optional[bool] = None
     straight_set_closing: bool = False

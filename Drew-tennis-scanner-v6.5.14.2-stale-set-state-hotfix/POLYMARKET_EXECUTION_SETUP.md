@@ -1,4 +1,4 @@
-# Polymarket US Live Execution Setup — Version 6.5.14
+# Polymarket US Live Execution Setup — Version 6.5.14.2
 
 ## Entry sizing
 

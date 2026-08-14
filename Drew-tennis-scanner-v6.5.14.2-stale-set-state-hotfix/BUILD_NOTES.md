@@ -1,6 +1,6 @@
-# Version 6.5.14 Build Notes
+# Version 6.5.14.2 Build Notes
 
-Version 6.5.14 changes live risk management from one flat stake to target exposure tiers while preserving the V6.5.13 scanner hard gates.
+Version 6.5.14.2 changes live risk management from one flat stake to target exposure tiers while preserving the V6.5.13 scanner hard gates.
 
 ## Live target exposure
 
@@ -30,3 +30,9 @@ The client-side backed-outcome stop trigger is now 35¢. It still uses Polymarke
 ## Verification
 
 The suite includes direct tests for fresh 15% one-break entries, fresh 25% two-break entries, 15%→25% upgrades, legacy 20%→25% upgrades, no stacking above 25%, opposite-side protection, and the 35¢ stop.
+
+
+## V6.5.14.2 stale-set mapping hotfix
+- Current-set resolution now uses the highest set evidenced by scores, point-by-point, and live sets-won tally; event_status is no longer authoritative by itself.
+- Prevents a completed prior-set score such as 6-3 from being recycled as the current set when Set 2 has begun at 0-0.
+- Adds execution-side set-state consistency checks before any Polymarket order is submitted.

@@ -447,3 +447,69 @@ def test_one_break_at_one_game_can_never_trade_even_with_40_love_confirmation() 
     decision = evaluate_match(match)
     assert decision.status == "NO TRADE"
     assert any("at least 4 games" in concern for concern in decision.concerns)
+
+
+class StaleSetStateRegressionTests(unittest.TestCase):
+    def test_completed_first_set_cannot_be_reused_as_current_set_when_second_set_has_started(self):
+        event = {
+            "event_key": "landaluce-draper-stale-set-regression",
+            "event_first_player": "M. Landaluce",
+            "event_second_player": "J. Draper",
+            "first_player_key": 1,
+            "second_player_key": 2,
+            "event_type_type": "Atp Singles",
+            "tournament_name": "ATP Cincinnati",
+            # Reproduce the provider race: status is stale on Set 1 while the
+            # score feed/final-result already show Set 2 has begun.
+            "event_status": "Set 1",
+            "event_final_result": "1 - 0",
+            "event_game_result": "0 - 0",
+            "event_serve": "First Player",
+            "scores": [
+                {"score_set": "1", "score_first": "6", "score_second": "3"},
+                {"score_set": "2", "score_first": "0", "score_second": "0"},
+            ],
+            "statistics": [],
+            "pointbypoint": [
+                {
+                    "set_number": "Set 1",
+                    "number_game": "9",
+                    "player_served": "Second Player",
+                    "serve_winner": "First Player",
+                    "points": [],
+                }
+            ],
+        }
+
+        mapping = build_live_scanner_mapping(event, "M. Landaluce", rankings={1: 20, 2: 9})
+
+        self.assertEqual(mapping.updates["scan_current_set"], 2)
+        self.assertEqual(mapping.updates["scan_games_in_set"], 0)
+        self.assertEqual(mapping.updates["scan_opponent_games_in_set"], 0)
+        self.assertEqual(mapping.updates["scan_break_lead"], 0)
+        self.assertFalse(mapping.updates["scan_serving_for_match"])
+
+    def test_final_result_advances_set_even_if_new_score_row_is_delayed(self):
+        event = {
+            "event_key": "set-row-delay-regression",
+            "event_first_player": "A. Alpha",
+            "event_second_player": "B. Beta",
+            "first_player_key": 1,
+            "second_player_key": 2,
+            "event_type_type": "Atp Singles",
+            "tournament_name": "ATP Test",
+            "event_status": "Set 1",
+            "event_final_result": "1 - 0",
+            "event_game_result": "0 - 0",
+            "event_serve": "First Player",
+            "scores": [{"score_set": "1", "score_first": "6", "score_second": "3"}],
+            "statistics": [],
+            "pointbypoint": [],
+        }
+
+        mapping = build_live_scanner_mapping(event, "A. Alpha", rankings={1: 10, 2: 20})
+
+        self.assertEqual(mapping.updates["scan_current_set"], 2)
+        self.assertEqual(mapping.updates["scan_games_in_set"], 0)
+        self.assertEqual(mapping.updates["scan_break_lead"], 0)
+        self.assertFalse(mapping.updates["scan_serving_for_match"])

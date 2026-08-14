@@ -619,7 +619,7 @@ class PolymarketExecutionEngine:
         if not player or not opponent or _normalize_name(player) == _normalize_name(opponent):
             return result("REJECTED", "Scanner signal does not contain two different players.", failure_stage="input")
 
-        # Version 6.5.14 execution fail-safe.  The scanner is the primary decision
+        # Version 6.5.14.2 execution fail-safe.  The scanner is the primary decision
         # authority, but Polymarket must never receive an immature one-break
         # signal even if an upstream mapping/decision regression marks it TRADE.
         try:
@@ -632,6 +632,49 @@ class PolymarketExecutionEngine:
                 "Execution safety gate requires at least a one-break lead for tiered sizing.",
                 failure_stage="match_state_safety",
             )
+
+        # Stale-set fail-safe: a closing-set / serving-for-match claim must be
+        # compatible with the number of sets that have actually completed.
+        # This independently blocks the exact failure where a completed Set 1
+        # score was recycled as the current set after Set 2 had begun.
+        if record.get("match_closing_set") is True or record.get("serving_for_match") is True:
+            try:
+                best_of_sets = int(record.get("best_of_sets") or 3)
+                completed_sets = int(record.get("completed_sets"))
+            except (TypeError, ValueError):
+                return result(
+                    "REJECTED",
+                    "Execution safety gate blocked closing-set trade because completed-set state is unavailable.",
+                    failure_stage="set_state_safety",
+                )
+            sets_needed = best_of_sets // 2 + 1
+            minimum_completed = sets_needed - 1
+            if completed_sets < minimum_completed:
+                return result(
+                    "REJECTED",
+                    f"Execution safety gate blocked impossible closing-set state: only {completed_sets} set(s) are completed, but at least {minimum_completed} are required.",
+                    failure_stage="set_state_safety",
+                )
+
+        current_set_number = record.get("current_set_number")
+        completed_sets_value = record.get("completed_sets")
+        if current_set_number is not None and completed_sets_value is not None:
+            try:
+                current_set_number = int(current_set_number)
+                completed_sets_value = int(completed_sets_value)
+            except (TypeError, ValueError):
+                return result(
+                    "REJECTED",
+                    "Execution safety gate blocked trade because current-set numbering is invalid.",
+                    failure_stage="set_state_safety",
+                )
+            if current_set_number != completed_sets_value + 1:
+                return result(
+                    "REJECTED",
+                    f"Execution safety gate blocked inconsistent set state: current set is {current_set_number} but completed-set count is {completed_sets_value}.",
+                    failure_stage="set_state_safety",
+                )
+
         target_exposure_pct = (
             float(self.config.one_break_bankroll_pct)
             if break_lead == 1
