@@ -1,0 +1,310 @@
+from __future__ import annotations
+
+import os
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from scanner.decision import evaluate_match
+from scanner.live_mapping import LiveMappingResult
+from scanner.live_scan import PlayerScanResult
+from scanner.models import MatchInput
+from scanner.worker_runtime import RailwayShadowWorker, WorkerConfig
+
+
+class FakeSnapshot:
+    def __init__(self, events):
+        self.events = events
+        self.warnings = []
+        self.fixture_events = []
+
+    def summary(self):
+        return {
+            "events": len(self.events),
+            "livescore_count": len(self.events),
+            "fixtures_live_count": 0,
+            "duplicates_removed": 0,
+            "duration_seconds": 0.01,
+            "timezone": "America/Phoenix",
+            "warnings": [],
+        }
+
+
+class WorkerConfigTests(unittest.TestCase):
+    def test_local_store_and_public_summary_hides_secrets(self):
+        with patch.dict(os.environ, {"API_TENNIS_KEY": "api-key", "SCANNER_DATA_DIR": "/app/data"}, clear=True):
+            config = WorkerConfig.from_env()
+        self.assertEqual(config.scanner_data_dir, "/app/data")
+        summary = config.public_summary()
+        self.assertNotIn("api_tennis_key", summary)
+        self.assertEqual(summary["diagnostics_storage"], "sqlite")
+
+    def test_dry_run_does_not_require_database(self):
+        with patch.dict(os.environ, {"API_TENNIS_KEY": "api-key", "DRY_RUN": "true"}, clear=True):
+            config = WorkerConfig.from_env()
+        self.assertTrue(config.dry_run)
+
+    def test_save_all_scans_environment_variable_is_honored(self):
+        with patch.dict(
+            os.environ,
+            {
+                "API_TENNIS_KEY": "api-key",
+                "DRY_RUN": "true",
+                "SAVE_ALL_SCANS": "true",
+            },
+            clear=True,
+        ):
+            config = WorkerConfig.from_env()
+        self.assertTrue(config.save_all_scans)
+        self.assertEqual(config.public_summary()["storage_mode"], "all_player_evaluations")
+
+    def test_legacy_bankroll_and_scan_interval_cannot_override_locked_production_values(self):
+        with patch.dict(
+            os.environ,
+            {
+                "API_TENNIS_KEY": "api-key",
+                "DRY_RUN": "true",
+                "EXECUTION_BANKROLL_PCT": "10",
+                "SCAN_INTERVAL_SECONDS": "30",
+            },
+            clear=True,
+        ):
+            config = WorkerConfig.from_env()
+        self.assertEqual(config.execution_one_break_bankroll_pct, 15.0)
+        self.assertEqual(config.execution_two_break_bankroll_pct, 25.0)
+        self.assertEqual(config.public_summary()["execution_one_break_bankroll_pct"], 15.0)
+        self.assertEqual(config.public_summary()["execution_two_break_bankroll_pct"], 25.0)
+        self.assertEqual(config.scan_interval_seconds, 15)
+        self.assertEqual(config.public_summary()["scan_interval_seconds"], 15)
+        self.assertEqual(config.execution_stop_loss_trigger_cents, 35.0)
+        self.assertEqual(config.public_summary()["execution_stop_loss_trigger_cents"], 35.0)
+
+    def test_legacy_maximum_order_environment_value_is_ignored(self):
+        with patch.dict(
+            os.environ,
+            {
+                "API_TENNIS_KEY": "api-key",
+                "DRY_RUN": "true",
+                "EXECUTION_MAX_ORDER_USD": "1",
+            },
+            clear=True,
+        ):
+            config = WorkerConfig.from_env()
+        self.assertFalse(hasattr(config, "execution_maximum_order_usd"))
+        self.assertIsNone(config.public_summary()["execution_maximum_order_usd"])
+        self.assertFalse(config.public_summary()["execution_same_market_upgrades"])
+
+
+class WorkerLogicTests(unittest.TestCase):
+    def setUp(self):
+        self.config = WorkerConfig(
+            api_tennis_key="test",
+            dry_run=True,
+            worker_id="test-worker",
+            minimum_market_confidence=80,
+        )
+        self.worker = RailwayShadowWorker(self.config)
+
+    def test_market_candidate_must_be_open_match_winner_and_confident(self):
+        rows = [
+            {
+                "market_slug": "wrong",
+                "match_winner_market": False,
+                "api_match_confidence": 99,
+            },
+            {
+                "market_slug": "closed",
+                "match_winner_market": True,
+                "api_match_confidence": 99,
+                "closed": True,
+            },
+            {
+                "market_slug": "safe",
+                "match_winner_market": True,
+                "api_match_confidence": 91,
+                "active": True,
+                "closed": False,
+            },
+        ]
+        selected = self.worker._select_market_candidate(rows)
+        self.assertEqual(selected["market_slug"], "safe")
+
+    def test_provisional_public_candidate_reaches_authenticated_execution_gate(self):
+        rows = [
+            {
+                "market_slug": "aec-atp-maxreh-stetra-2026-07-28",
+                "match_winner_market": False,
+                "discovery_candidate": True,
+                "api_match_confidence": 96,
+                "active": True,
+                "closed": False,
+            }
+        ]
+        selected = self.worker._select_market_candidate(rows)
+        self.assertIsNotNone(selected)
+        self.assertEqual(
+            selected["market_slug"],
+            "aec-atp-maxreh-stetra-2026-07-28",
+        )
+
+    @patch("scanner.worker_runtime.scan_both_players", return_value=[])
+    @patch("scanner.worker_runtime.enrich_market_row")
+    def test_process_event_does_not_discard_provisional_slug(
+        self, enrich, _scan
+    ):
+        provisional = {
+            "market_slug": "aec-atp-maxreh-stetra-2026-07-28",
+            "market_title": "Who will win?",
+            "match_winner_market": False,
+            "discovery_candidate": True,
+            "api_match_confidence": 96,
+            "active": True,
+            "closed": False,
+        }
+        enrich.return_value = dict(provisional)
+        event = {
+            "event_key": "rehberg-travaglia",
+            "event_first_player": "M. H. Rehberg",
+            "event_second_player": "S. Travaglia",
+            "tournament_name": "Bonn",
+        }
+        with patch.object(self.worker, "_find_market", return_value=provisional):
+            _records, market_found, _counts = self.worker._process_event(
+                event,
+                {},
+                "cycle",
+                "2026-07-28T08:55:26-07:00",
+            )
+        self.assertTrue(market_found)
+
+    def test_dedupe_key_ignores_informational_price_but_not_key_order(self):
+        base = {
+            "event_key": "1",
+            "player": "A",
+            "event_status": "Set 2",
+            "event_final_result": "1 - 0",
+            "event_game_result": "30 - 15",
+            "event_serve": "First Player",
+            "event_state": {"scores": [{"score_first": "4", "score_second": "2"}]},
+            "market_slug": "a-vs-b",
+            "market_side": "Long / YES",
+            "market_price_cents": 98.0,
+            "decision_status": "TRADE",
+            "stability_score": 90.0,
+        }
+        reordered = dict(reversed(list(base.items())))
+        self.assertEqual(self.worker._dedupe_key(base), self.worker._dedupe_key(reordered))
+        changed = dict(base, market_price_cents=99.0)
+        self.assertEqual(self.worker._dedupe_key(base), self.worker._dedupe_key(changed))
+        changed_state = dict(base, event_game_result="40 - 15")
+        self.assertNotEqual(
+            self.worker._dedupe_key(base), self.worker._dedupe_key(changed_state)
+        )
+
+    def test_worker_defaults_to_qualified_trade_only_storage(self):
+        self.assertFalse(self.config.save_all_scans)
+
+    def test_save_all_mode_persists_no_trade_rows(self):
+        all_config = WorkerConfig(
+            api_tennis_key="test",
+            dry_run=True,
+            worker_id="test-worker",
+            save_all_scans=True,
+        )
+        all_worker = RailwayShadowWorker(all_config)
+        rows = [
+            {"decision_status": "TRADE"},
+            {"decision_status": "NO TRADE"},
+        ]
+        self.assertEqual(all_worker._persist_records(rows).inserted, 2)
+        self.assertEqual(self.worker._persist_records(rows).inserted, 1)
+
+    def test_no_trade_record_contains_exact_diagnostics_and_is_not_open(self):
+        all_config = WorkerConfig(
+            api_tennis_key="test",
+            dry_run=True,
+            worker_id="test-worker",
+            save_all_scans=True,
+        )
+        worker = RailwayShadowWorker(all_config)
+        match = MatchInput(
+            player="Player A",
+            opponent="Player B",
+            tournament="Test ATP",
+            league="ATP",
+            competition_group="ATP Tour",
+            event_key="event-1",
+            match_closing_set=False,
+            tiebreak=False,
+            break_lead=0,
+            serving=True,
+            current_set_breaks_suffered=0,
+            effective_service_points_won_pct=65.0,
+            backed_player_games_in_set=2,
+            opponent_games_in_set=2,
+        )
+        decision = evaluate_match(match)
+        mapping = LiveMappingResult(
+            updates={},
+            api_fields=[],
+            calculated_fields=[],
+            manual_fields=[],
+            warnings=[],
+        )
+        result = PlayerScanResult(
+            player=match.player,
+            match=match,
+            decision=decision,
+            mapping=mapping,
+        )
+        record = worker._build_scan_record(
+            {
+                "event_key": "event-1",
+                "event_first_player": "Player A",
+                "event_second_player": "Player B",
+            },
+            result,
+            "00000000-0000-0000-0000-000000000001",
+            "2026-07-24T21:00:00+00:00",
+            market_row=None,
+            market_side=None,
+            market_price=0.0,
+            extra_errors=[],
+        )
+        self.assertEqual(record["decision_status"], "NO TRADE")
+        self.assertIn("Current set is not match-closing", record["decision_reason"])
+        self.assertIn("Backed player is not ahead by a break", record["decision_reason"])
+        self.assertEqual(record["paper_trade_status"], "NOT_ENTERED")
+        self.assertIsNone(record["paper_entry_price_cents"])
+        self.assertFalse(record["alert_eligible"])
+        diagnostics = record["match_snapshot"]["decision_diagnostics"]
+        self.assertEqual(diagnostics["status"], "NO TRADE")
+        self.assertTrue(diagnostics["blocking_rules"])
+
+    def test_winner_resolution_from_completed_fixture(self):
+        event = {
+            "event_first_player": "A",
+            "event_second_player": "B",
+            "event_final_result": "2 - 1",
+        }
+        self.assertEqual(self.worker._fixture_winner(event)[0], "A")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+class OptionalSQLiteStartupTests(unittest.TestCase):
+    def test_production_config_does_not_require_external_database(self):
+        with patch.dict(os.environ, {"API_TENNIS_KEY": "api-key", "POLYMARKET_EXECUTION_ENABLED": "false"}, clear=True):
+            config = WorkerConfig.from_env()
+        self.assertFalse(config.dry_run)
+        self.assertEqual(config.scanner_data_dir, "data")
+
+    def test_local_storage_failure_is_nonfatal_and_disables_store(self):
+        class DeadStore:
+            def verify_tables(self):
+                raise RuntimeError("SQLite path not writable")
+        config = WorkerConfig(api_tennis_key="test", dry_run=False, worker_id="test-worker")
+        worker = RailwayShadowWorker(config, store=DeadStore())
+        worker.verify_startup()
+        self.assertIsNone(worker.store)
