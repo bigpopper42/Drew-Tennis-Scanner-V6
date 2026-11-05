@@ -615,6 +615,8 @@ def test_exact_score_scanner_slug_is_rejected_then_event_moneyline_is_used() -> 
         ("M. H. Rehberg", "S. Travaglia", "Max Hans Rehberg vs. Stefano Travaglia", "Max Hans Rehberg", "Stefano Travaglia"),
         ("T. Skatov", "T. Faurel", "Timofey Skatov vs. Thomas Faurel", "Timofey Skatov", "Thomas Faurel"),
         ("J. Mensik", "T. Svajda", "Jakub Mensik vs. Trevor Svajda", "Jakub Mensik", "Trevor Svajda"),
+        ("B. Shick", "Dar. Blanch", "Braden Shick vs. Darwin Blanch", "Braden Shick", "Darwin Blanch"),
+        ("Dar. Blanch", "B. Shick", "Darwin Blanch vs. Braden Shick", "Braden Shick", "Darwin Blanch"),
     ],
 )
 def test_abbreviated_scanner_names_match_full_event_and_side_names(

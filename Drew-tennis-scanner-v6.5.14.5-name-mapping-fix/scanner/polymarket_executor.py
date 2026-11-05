@@ -1805,7 +1805,12 @@ def _given_names_compatible(first: list[str], second: list[str]) -> bool:
         other = longer[index]
         if not token or not other or token[0] != other[0]:
             return False
-        if len(token) > 1 and len(other) > 1 and token != other:
+        # Tennis feeds abbreviate given names to more than one letter
+        # (e.g. "Dar. Blanch" vs "Darwin Blanch"). Permit a genuine
+        # prefix only; the caller still requires unique opposing sides.
+        if len(token) > 1 and len(other) > 1 and not (
+            token == other or token.startswith(other) or other.startswith(token)
+        ):
             return False
     return True
 
