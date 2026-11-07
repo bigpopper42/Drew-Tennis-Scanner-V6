@@ -1815,6 +1815,31 @@ def _given_names_compatible(first: list[str], second: list[str]) -> bool:
     return True
 
 
+def _compound_surname_alias_matches(expected: str, candidate: str) -> bool:
+    """Match a feed's two-surname identity to a market's shortened surname.
+
+    Example: J. C. Prado Angelo == Juan Carlos Prado. This deliberately
+    requires TWO independently matching given-name tokens and a complete
+    first surname token; a single initial plus a shared surname is not
+    sufficient evidence to silently omit a family-name token.
+    """
+    for longer_name, shorter_name in ((expected, candidate), (candidate, expected)):
+        longer = _normalize_name(longer_name).split()
+        shorter = _normalize_name(shorter_name).split()
+        if len(longer) < 4 or len(shorter) < 3:
+            continue
+        # Exactly one omitted trailing surname token, never a fuzzy edit.
+        if len(longer) != len(shorter) + 1:
+            continue
+        given_count = len(shorter) - 1
+        longer_given, shorter_given = longer[:given_count], shorter[:given_count]
+        if given_count < 2 or not _given_names_compatible(longer_given, shorter_given):
+            continue
+        if longer[given_count] == shorter[-1]:
+            return True
+    return False
+
+
 def _names_match(expected: str, candidate: str) -> bool:
     for expected_given, expected_surname in _name_signatures(expected):
         if not expected_surname:
@@ -1823,8 +1848,18 @@ def _names_match(expected: str, candidate: str) -> bool:
             if expected_surname == candidate_surname and _given_names_compatible(
                 expected_given, candidate_given
             ):
+                # A multi-token family name must not be mistaken for an
+                # optional extra given name (Prado Angelo != Angelo).
+                # Two matching full given-name tokens make this case
+                # distinguishable without changing legacy short names.
+                if (len(expected_given) >= 3 and len(candidate_given) == 2
+                    and len(expected_given[2]) > 1):
+                    continue
+                if (len(candidate_given) >= 3 and len(expected_given) == 2
+                    and len(candidate_given[2]) > 1):
+                    continue
                 return True
-    return False
+    return _compound_surname_alias_matches(expected, candidate)
 
 
 def _side_name(side: Mapping[str, Any]) -> str:
@@ -1974,11 +2009,19 @@ def _event_matches(event: Mapping[str, Any], player: str, opponent: str) -> bool
 def _name_in_text(name: str, text: str) -> bool:
     normalized = _normalize_name(text)
     given, surname = _name_parts(name)
-    if not surname or not re.search(rf"\b{re.escape(surname)}\b", normalized):
-        return False
-    if not given:
-        return True
-    return any(re.search(rf"\b{re.escape(token[0])}\w*\b", normalized) for token in given if token)
+    if surname and re.search(rf"\b{re.escape(surname)}\b", normalized):
+        if not given:
+            return True
+        if any(re.search(rf"\b{re.escape(token[0])}\w*\b", normalized) for token in given if token):
+            return True
+    # The event title can contain the shortened family name even when the
+    # scanner includes a second surname. Only consider explicit VS pairings;
+    # never infer an identity from an arbitrary substring in event metadata.
+    if re.search(r"\s(?:vs?\.?|versus)\s", text, flags=re.IGNORECASE):
+        for part in re.split(r"\s(?:vs?\.?|versus)\s", text, flags=re.IGNORECASE):
+            if _compound_surname_alias_matches(name, part.strip()):
+                return True
+    return False
 
 
 def _event_search_terms(player: str, opponent: str) -> list[str]:
@@ -1987,6 +2030,14 @@ def _event_search_terms(player: str, opponent: str) -> list[str]:
     terms: list[str] = []
     if player_surname and opponent_surname:
         terms.append(f"{player_surname} {opponent_surname}")
+    # Also search using the first surname when a feed includes two surnames.
+    # This only expands event discovery, not the match or trade decision.
+    player_tokens = _normalize_name(player).split()
+    opponent_tokens = _normalize_name(opponent).split()
+    if len(player_tokens) >= 4 and len(opponent_tokens) >= 2:
+        terms.append(f"{player_tokens[-2]} {opponent_surname}")
+    if len(opponent_tokens) >= 4 and len(player_tokens) >= 2:
+        terms.append(f"{player_surname} {opponent_tokens[-2]}")
     full = f"{_normalize_name(player)} {_normalize_name(opponent)}".strip()
     if full and full not in terms:
         terms.append(full)
